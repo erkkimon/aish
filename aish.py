@@ -51,6 +51,9 @@ EMOJI_STOP = "🛑"
 EMOJI_COMMENT = "💬"
 EMOJI_ERROR = "❌"
 EMOJI_SUMMARY = "📝"
+EMOJI_COMMENT = "💬"
+
+C_BG_SUBTLE = "\033[48;5;236m" # A subtle dark grey background
 
 # --- Core Functions ---
 
@@ -117,26 +120,13 @@ def parse_llm_response(response_text):
     return explanation, command
 
 def execute_command(command):
-    """Executes a shell command and returns its output."""
+    """Executes a shell command and returns its raw output."""
     try:
         shell = os.environ.get("SHELL", "/bin/bash")
-        print(f"{C_GREEN}{EMOJI_EXECUTE}{C_BOLD} Executing command:{C_END} {command}")
         result = subprocess.run(command, shell=True, check=False, capture_output=True, text=True, executable=shell)
-        
-        output_lines = []
-        if result.stdout:
-            output_lines.append(f"{C_GREEN}STDOUT:{C_END}\n{result.stdout.strip()}")
-        if result.stderr:
-            output_lines.append(f"{C_RED}STDERR:{C_END}\n{result.stderr.strip()}")
-        
-        if result.returncode != 0:
-            error_msg = f"{C_RED}{EMOJI_ERROR} Command failed with exit code {result.returncode}{C_END}"
-            output_lines.insert(0, error_msg)
-
-        return "\n".join(output_lines), result.returncode
-
+        return result.stdout, result.stderr, result.returncode
     except Exception as e:
-        return f"{C_RED}{EMOJI_ERROR} Execution error: {e}{C_END}", 1
+        return None, f"Execution error: {e}", 1
 
 # --- Main Execution ---
 
@@ -159,10 +149,19 @@ if __name__ == "__main__":
         {"role": "user", "content": user_initial_msg},
     ]
 
-    while True:
-        print(f"\n{C_BLUE}--- {EMOJI_AGENT} Agent is thinking... ---{C_END}")
+    # --- UI Initialization ---
+    print(f"┌ {EMOJI_AGENT} aish")
+    loop_active = True
+    final_summary = ""
+
+    while loop_active:
+        # --- Agent Thinking ---
+        print("⣾  Agent is thinking...", end='\r')
         llm_response = call_llm(messages)
+        sys.stdout.write('\x1b[2K\r') # Clear line
+
         if not llm_response:
+            final_summary = "Agent did not return a response."
             break
 
         assistant_response = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -171,43 +170,84 @@ if __name__ == "__main__":
         explanation, command_to_run = parse_llm_response(assistant_response)
 
         if not command_to_run:
-            print(f"\n{C_BLUE}--- {EMOJI_SUMMARY} Agent Summary ---{C_END}")
-            print(explanation)
-            break
+            final_summary = explanation
+            loop_active = False
+            continue
 
-        print(f"\n{C_BLUE}--- {EMOJI_AGENT} Agent's Plan ---{C_END}")
-        print(explanation)
-        print(f"\n{C_GREEN}{EMOJI_COMMAND}{C_BOLD} Proposed Command:{C_END} {command_to_run}")
+        # --- Plan and Command ---
+        print("│")
+        print(f"◇  {C_BOLD}Plan{C_END}")
+        for line in explanation.splitlines():
+            print(f"│  {line}")
+        print("│")
+        print(f"◆  {C_BOLD}Command{C_END}")
+        print(f"│  {C_BG_SUBTLE} {command_to_run} {C_END}")
+        print("│")
 
+        # --- User Prompt ---
         try:
-            choice_prompt = f"{C_YELLOW}Execute command? [Y/n/c]: {C_END}"
+            choice_prompt = f"├─ {C_YELLOW}Execute? [Y/n/c(omment)]: {C_END}"
             choice = input(choice_prompt).lower().strip()
         except EOFError:
             choice = 'n'
 
         if choice == 'n':
-            print(f"{C_YELLOW}{EMOJI_STOP} Execution stopped by user.{C_END}")
-            break
+            final_summary = "Execution stopped by user."
+            loop_active = False
+            continue
         elif choice == 'c':
+            print("│")
             try:
-                comment_prompt = f"{C_YELLOW}{EMOJI_COMMENT} Please provide your comment: {C_END}"
+                comment_prompt = f"│  {C_YELLOW}{EMOJI_COMMENT} Comment: {C_END}"
                 comment = input(comment_prompt)
                 if not comment.strip():
-                    print(f"{C_RED}{EMOJI_ERROR} Comment cannot be empty. Please try again.{C_END}")
+                    print(f"│  {C_RED}{EMOJI_ERROR} Comment cannot be empty. Please try again.{C_END}")
                     continue
                 messages.append({"role": "user", "content": f"User comment: {comment}"})
+                print("│")
                 continue
             except EOFError:
-                print(f"{C_YELLOW}{EMOJI_STOP} Execution stopped by user.{C_END}")
-                break
+                final_summary = "Execution stopped by user."
+                loop_active = False
+                continue
         elif choice == 'y' or choice == '':
-            output_text, return_code = execute_command(command_to_run)
+            print("│")
+            print(f"├─ {EMOJI_EXECUTE} Execution")
+            print(f"│  Running: {command_to_run}")
             
-            if output_text:
-                print(f"\n{C_BLUE}--- {EMOJI_OUTPUT} Command Output ---{C_END}")
-                print(output_text)
+            stdout, stderr, return_code = execute_command(command_to_run)
             
-            messages.append({"role": "user", "content": f"Command '{command_to_run}' executed (exit code: {return_code}). Output:\n{output_text}"})
+            output_for_llm = []
+            
+            print(f"│  {C_BG_SUBTLE}")
+            if stdout:
+                print(f"│  📄 {C_BOLD}STDOUT{C_END}")
+                for line in stdout.strip().splitlines():
+                    print(f"│  {line}")
+                output_for_llm.append(f"STDOUT:\n{stdout.strip()}")
+
+            if stderr:
+                print(f"│  ❌ {C_BOLD}STDERR{C_END}")
+                for line in stderr.strip().splitlines():
+                    print(f"│  {line}")
+                output_for_llm.append(f"STDERR:\n{stderr.strip()}")
+            
+            if return_code != 0:
+                output_for_llm.insert(0, f"Command failed with exit code {return_code}")
+
+            print(f"│  {C_END}")
+            print("│")
+
+            full_output_for_llm = "\n".join(output_for_llm)
+            messages.append({"role": "user", "content": f"Command '{command_to_run}' executed (exit code: {return_code}). Output:\n{full_output_for_llm}"})
         else:
-            print(f"{C_RED}{EMOJI_ERROR} Invalid choice. Exiting.{C_END}")
-            break
+            final_summary = "Invalid choice. Exiting."
+            loop_active = False
+
+    # --- Final Summary ---
+    print("│")
+    print(f"├─ {EMOJI_SUMMARY} Summary")
+    for line in final_summary.splitlines():
+        print(f"│  {line}")
+    print("│")
+    print("└─ Task complete.")
