@@ -7,6 +7,10 @@ import requests
 import subprocess
 from datetime import datetime
 import yaml
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.text import Text
 
 # --- Configuration Loader ---
 CONFIG_PATH = "config.yaml"
@@ -98,8 +102,9 @@ def get_system_prompt():
     4.  **Summarize:** When you believe the user's original request is fully resolved, do NOT propose a command. Instead, provide a concise summary of the key findings and the final outcome. Start your summary with the phrase "Final Summary:".
 
     ## Important Rules:
-    -   Propose only one command at a time.
-    -   Explain your reasoning clearly.
+    -   **Efficiency:** To be maximally efficient, use shell script constructs like `for` loops, pipes, and command chains (`&&`) to perform multiple steps in a single command when it is safe and logical to do so. This reduces the need for user interaction.
+    -   **Clarity:** Propose only one command block at a time. Explain your reasoning for the entire block clearly.
+    -   **Safety:** If a command is complex or potentially destructive, break it down into smaller, safer steps.
     -   If a command fails, analyze the error and try to correct it.
     -   Your task is complete when you believe the user's original request has been fully addressed.
     """
@@ -131,8 +136,10 @@ def execute_command(command):
 # --- Main Execution ---
 
 if __name__ == "__main__":
+    console = Console()
+
     if len(sys.argv) < 2:
-        print(f"Usage: {C_BLUE}{C_BOLD}./aish.py <your command>{C_END}", file=sys.stderr)
+        console.print("Usage: [bold blue]./aish.py <your command>")
         sys.exit(1)
 
     user_command = " ".join(sys.argv[1:])
@@ -149,19 +156,12 @@ if __name__ == "__main__":
         {"role": "user", "content": user_initial_msg},
     ]
 
-    # --- UI Initialization ---
-    print(f"┌ {EMOJI_AGENT} aish")
-    loop_active = True
-    final_summary = ""
-
-    while loop_active:
-        # --- Agent Thinking ---
-        print("⣾  Agent is thinking...", end='\r')
-        llm_response = call_llm(messages)
-        sys.stdout.write('\x1b[2K\r') # Clear line
-
+    while True:
+        with console.status("[bold green]Agent is thinking..."): 
+            llm_response = call_llm(messages)
+        
         if not llm_response:
-            final_summary = "Agent did not return a response."
+            console.print(Panel("Agent did not return a response.", title="Error", border_style="red"))
             break
 
         assistant_response = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -170,84 +170,56 @@ if __name__ == "__main__":
         explanation, command_to_run = parse_llm_response(assistant_response)
 
         if not command_to_run:
-            final_summary = explanation
-            loop_active = False
-            continue
+            console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
+            break
 
-        # --- Plan and Command ---
-        print("│")
-        print(f"◇  {C_BOLD}Plan{C_END}")
-        for line in explanation.splitlines():
-            print(f"│  {line}")
-        print("│")
-        print(f"◆  {C_BOLD}Command{C_END}")
-        print(f"│  {C_BG_SUBTLE} {command_to_run} {C_END}")
-        print("│")
+        # --- Plan and Command Panels ---
+        console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
+        console.print(Panel(Syntax(command_to_run, "bash", theme="monokai", line_numbers=False), title=f"{EMOJI_COMMAND} Command", border_style="blue"))
 
         # --- User Prompt ---
         try:
-            choice_prompt = f"├─ {C_YELLOW}Execute? [Y/n/c(omment)]: {C_END}"
-            choice = input(choice_prompt).lower().strip()
-        except EOFError:
+            choice_prompt = f"[bold yellow]Execute? (y/n/c):[/bold yellow] "
+            choice = console.input(choice_prompt).lower().strip()
+        except (EOFError, KeyboardInterrupt):
             choice = 'n'
 
-        if choice == 'n':
-            final_summary = "Execution stopped by user."
-            loop_active = False
-            continue
-        elif choice == 'c':
-            print("│")
+        if choice in ('n', 'no'):
+            console.print("[yellow]Execution stopped by user.[/yellow]")
+            break
+        elif choice in ('c', 'comment'):
             try:
-                comment_prompt = f"│  {C_YELLOW}{EMOJI_COMMENT} Comment: {C_END}"
-                comment = input(comment_prompt)
+                comment_prompt = f"[yellow]{EMOJI_COMMENT} Comment: [/yellow]"
+                comment = console.input(comment_prompt)
                 if not comment.strip():
-                    print(f"│  {C_RED}{EMOJI_ERROR} Comment cannot be empty. Please try again.{C_END}")
+                    console.print("[red]Comment cannot be empty.[/red]")
                     continue
                 messages.append({"role": "user", "content": f"User comment: {comment}"})
-                print("│")
                 continue
-            except EOFError:
-                final_summary = "Execution stopped by user."
-                loop_active = False
-                continue
-        elif choice == 'y' or choice == '':
-            print("│")
-            print(f"├─ {EMOJI_EXECUTE} Execution")
-            print(f"│  Running: {command_to_run}")
-            
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[yellow]Execution stopped by user.[/yellow]")
+                break
+        elif choice in ('y', 'yes', ''):
             stdout, stderr, return_code = execute_command(command_to_run)
             
             output_for_llm = []
-            
-            print(f"│  {C_BG_SUBTLE}")
-            if stdout:
-                print(f"│  📄 {C_BOLD}STDOUT{C_END}")
-                for line in stdout.strip().splitlines():
-                    print(f"│  {line}")
-                output_for_llm.append(f"STDOUT:\n{stdout.strip()}")
+            output_panels = []
 
+            if stdout:
+                output_for_llm.append(f"STDOUT:\n{stdout.strip()}")
+                output_panels.append(Panel(Syntax(stdout, "bash", theme="monokai"), title=f"{EMOJI_OUTPUT} STDOUT", border_style="green"))
             if stderr:
-                print(f"│  ❌ {C_BOLD}STDERR{C_END}")
-                for line in stderr.strip().splitlines():
-                    print(f"│  {line}")
                 output_for_llm.append(f"STDERR:\n{stderr.strip()}")
-            
+                output_panels.append(Panel(Text(stderr, justify="left"), title=f"{EMOJI_ERROR} STDERR", border_style="red"))
+
             if return_code != 0:
                 output_for_llm.insert(0, f"Command failed with exit code {return_code}")
 
-            print(f"│  {C_END}")
-            print("│")
+            for panel in output_panels:
+                console.print(panel)
 
             full_output_for_llm = "\n".join(output_for_llm)
             messages.append({"role": "user", "content": f"Command '{command_to_run}' executed (exit code: {return_code}). Output:\n{full_output_for_llm}"})
         else:
-            final_summary = "Invalid choice. Exiting."
-            loop_active = False
-
-    # --- Final Summary ---
-    print("│")
-    print(f"├─ {EMOJI_SUMMARY} Summary")
-    for line in final_summary.splitlines():
-        print(f"│  {line}")
-    print("│")
-    print("└─ Task complete.")
+            console.print("[red]Invalid choice. Exiting.[/red]")
+            break
