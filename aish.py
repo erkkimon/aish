@@ -6,29 +6,32 @@ import re
 import requests
 import subprocess
 from datetime import datetime
+import yaml
 
 # --- Configuration Loader ---
-CONFIG_PATH = "config.json"
-DEFAULT_CONFIG = {
-    "_comment": "Configuration for the aish agent. The api_key is optional and only needed for certain services.",
-    "model": "Devstral-Small-2505-abliterated.i1-Q2_K_S",
-    "endpoint_url": "http://localhost:11435/v1/chat/completions",
-    "api_key": "not-needed"
-}
+CONFIG_PATH = "config.yaml"
+DEFAULT_CONFIG = """
+# Configuration for the aish agent.
+model: Devstral-Small-2505-abliterated.i1-Q2_K_S
+endpoint_url: http://localhost:11435/v1/chat/completions
+# api_key: not-needed # Uncomment if you use a provider that requires an api key
+"""
 
 def load_config():
-    """Loads configuration from config.json, creating it if it doesn't exist."""
+    """Loads configuration from config.yaml, creating it if it doesn't exist."""
     if not os.path.exists(CONFIG_PATH):
         print(f"Configuration file not found. Creating default {CONFIG_PATH}")
         with open(CONFIG_PATH, 'w') as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
-        return DEFAULT_CONFIG
+            f.write(DEFAULT_CONFIG)
+        with open(CONFIG_PATH, 'r') as f:
+            return yaml.safe_load(f)
     try:
         with open(CONFIG_PATH, 'r') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+            return yaml.safe_load(f)
+    except (yaml.YAMLError, IOError) as e:
         print(f"Error reading {CONFIG_PATH}: {e}. Using default settings.", file=sys.stderr)
-        return DEFAULT_CONFIG
+        with open(CONFIG_PATH, 'r') as f:
+            return yaml.safe_load(f)
 
 CONFIG = load_config()
 
