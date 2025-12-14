@@ -76,12 +76,33 @@ C_BG_SUBTLE = "\033[48;5;236m" # A subtle dark grey background
 
 def get_initial_context():
     """Gathers initial context to provide to the agent."""
-    return {
+    context = {
         "current_directory": os.getcwd(),
         "current_datetime": datetime.now().isoformat(),
         "operating_system": sys.platform,
         "shell": os.environ.get("SHELL", "unknown"),
     }
+    
+    # Add bash session history if available
+    bash_session_log = os.environ.get("BASH_SESSION_CARBON_COPY")
+    if bash_session_log and os.path.exists(bash_session_log):
+        try:
+            with open(bash_session_log, 'r') as f:
+                # Get last 50 lines
+                lines = f.readlines()
+                last_50_lines = lines[-50:] if len(lines) > 50 else lines
+                context["bash_session_history"] = {
+                    "source_file": bash_session_log,
+                    "last_50_lines": [line.rstrip() for line in last_50_lines],
+                    "explanation": "These are the last 50 lines of bash output from user's current session"
+                }
+        except (IOError, OSError) as e:
+            context["bash_session_history"] = {
+                "error": f"Could not read bash session log: {e}",
+                "source_file": bash_session_log
+            }
+    
+    return context
 
 def call_llm(messages):
     """Calls the LLM API with the given messages."""
