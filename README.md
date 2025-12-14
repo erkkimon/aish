@@ -4,82 +4,142 @@ Delegate shell tasks to aish who lives in the terminal. You can do in-line chatt
 
 `aish` is a simple, interactive AI assistant that runs in your shell. It uses a local large language model (LLM) to help you accomplish tasks by proposing and executing shell commands for you.
 
-## 1. Usage
+## 🚀 Features
 
-To run the agent, use the `@aish` alias with your command as arguments.
+- **In-line Chatting**: Tag `@aish` anywhere in your terminal session for instant assistance
+- **Context Awareness**: aish sees your bash session history and can reference previous commands and outputs
+- **Interactive Command Execution**: Approve, deny, or comment on proposed commands before execution
+- **Memory System**: Persistent memory that learns your preferences and environment details across sessions
+- **Smart Model Selection**: Automatic model discovery from your LLM endpoint during setup
+- **Rich Terminal UI**: Beautiful, colorized output with panels and syntax highlighting
+- **Local-First Design**: Works with local LLM runners (Ollama, vLLama) or commercial OpenAI compatible APIs
+- **Bash Session Logging**: Optional real-time session recording for review and sharing
+- **Question Detection**: Automatically detects when aish asks questions and provides interactive responses
 
-**Example of in-line chatting:**
-```bash
-$ ls -l
-total 4
--rw-r--r-- 1 user user 123 Nov  7 14:23 my_file.txt
-
-$ @aish what is in my_file.txt
-... aish will show you the content of the file ...
-
-$ rm my_file.txt
-$
-```
-
-The agent will then propose a plan and a command. You can approve, deny, or comment on its proposal:
--   `y` or `Enter`: Execute the command.
--   `n`: Stop the agent.
--   `c`: Provide a comment to revise the agent's plan.
-
-## 2. Setup
+## 📦 Installation
 
 **Prerequisites:**
 - Python 3.12+
 - A running OpenAI-compatible LLM endpoint. `aish` is designed with a local-first approach, compatible with local LLM runners like [vLLaMA](https://github.com/erkkimon/vllama) and [Ollama](https://github.com/ollama/ollama). It also works with OpenAI and any other OpenAI-compatible API.
 
-**Installation:**
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/erkkimon/aish ~/Software/aish
-    cd ~/Software/aish
-    ```
-
-2.  **Create and activate a virtual environment:**
-    ```bash
-    python3.12 -m venv venv312
-    source venv312/bin/activate
-    ```
-
-3.  **Install the required packages:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-4.  **Add alias to your shell's configuration file:**
-    ```bash
-    echo "alias @aish='~/Software/aish/venv312/bin/python ~/Software/aish/aish.py'" >> ~/.bashrc
-    # or ~/.zshrc
-    ```
-    Then restart your shell or source the config file.
-
-## 3. Configuration
-
-`aish` is configured via a `config.yaml` file. The first time you run the script, it will automatically create a default one for you.
-
-**Default `config.yaml`:**
-```yaml
-# Configuration for the aish agent.
-model: Devstral-Small-2505-abliterated.i1-Q2_K_S
-endpoint_url: http://localhost:11435/v1/chat/completions
-# api_key: not-needed # Uncomment if you use a provider that requires an api key
+**Quick Install:**
+```bash
+git clone https://github.com/erkkimon/aish ~/Software/aish
+cd ~/Software/aish
+bash setup.sh
 ```
 
--   `model`: The name of the model to use at your endpoint.
--   `endpoint_url`: The URL for the chat completions API.
--   `api_key`: Optional. If your service requires an API key, uncomment the line and replace `not-needed` with your key.
+The setup script will:
+1. Create a Python virtual environment automatically
+2. Install all required dependencies
+3. Set up the `@aish` command in your `~/.bashrc`
+4. Discover available models from your endpoint and let you choose interactively
+5. Create a user configuration file at `~/.aish/config.yaml`
 
-## 4. Bash Session Logging (Optional)
+After installation, restart your terminal or run `source ~/.bashrc` to start using `@aish`.
 
-AISH includes optional bash session logging functionality that creates a real-time carbon copy of your terminal session. This is useful for:
+## 🎯 Usage
 
-- Keeping a record of your work
-- Reviewing commands later
-- Sharing session logs with others
+### Basic Usage
+To run the agent, use the `@aish` alias with your command as arguments:
+
+```bash
+@aish show me all Python files in this directory
+```
+
+### Context-Aware In-line Chatting
+
+aish is context-aware and can see your recent terminal history. This enables powerful in-line conversations:
+
+**Example 1: Analyzing file permissions**
+```bash
+$ ls -la
+total 24
+drwxr-xr-x  5 user user 4096 Dec 14 10:23 .
+drwxr-xr-x 18 user user 4096 Dec 14 09:15 ..
+-rw-r--r--  1 user user  220 Dec 14 10:20 config.yaml
+-rwxr-xr-x  1 user user  450 Dec 14 10:15 setup.sh
+-rw-r--r--  1 user user 1200 Dec 14 10:10 README.md
+
+$ @aish do those file permissions look okay?
+🤖 Plan: I'll check the file permissions from your ls output and analyze if they look correct.
+🛠️ Command: echo "Analyzing permissions..."
+Execute? (Y/n/c):
+```
+
+**Example 2: Working with command output**
+```bash
+$ find . -name "*.log" -size +10M
+./logs/app.log
+./logs/debug.log
+
+$ @aish compress those large log files
+🤖 Plan: I'll compress the large log files you found to save disk space.
+🛠️ Command: gzip ./logs/app.log ./logs/debug.log
+Execute? (Y/n/c): y
+✓ Command executed successfully
+```
+
+**Example 3: Debugging after errors**
+```bash
+$ python script.py
+Traceback (most recent call last):
+  File "script.py", line 15, in <module>
+    process_data()
+  File "script.py", line 8, in process_data
+    result = 10 / 0
+ZeroDivisionError: division by zero
+
+$ @aish fix that error
+🤖 Plan: I can see the ZeroDivisionError in your script. Let me examine the file and fix the division by zero issue.
+🛠️ Command: sed -i 's/10 \/ 0/10 \/ 1/g' script.py
+Execute? (Y/n/c): c
+💬 Comment: Actually, check what the correct divisor should be
+🤖 Plan: You're right, let me first examine the script to understand the context...
+```
+
+### Interactive Controls
+
+When aish proposes a command, you can:
+-   `y` or `Enter`: Execute the command
+-   `n`: Stop the agent
+-   `c`: Provide a comment to revise the agent's plan
+
+### Memory Management
+
+aish has persistent memory that learns from your interactions:
+
+```bash
+$ @aish I prefer using ripgrep instead of grep
+🤖 Plan: I'll add this preference to memory so I remember to use ripgrep in future commands.
+...
+✓ Memory updated successfully
+```
+
+The memory system automatically suggests updates when tasks are completed, storing:
+- Your preferences and behavioral guidelines
+- Environment details and configurations
+- Workflow preferences
+- Useful context from previous sessions
+
+## ⚙️ Configuration
+
+`aish` is configured via a `config.yaml` file. The setup script automatically creates one for you at `~/.aish/config.yaml`.
+
+**Configuration options:**
+-   `model`: The name of the model to use at your endpoint
+-   `endpoint_url`: The URL for the chat completions API
+-   `api_key`: Optional API key if your service requires authentication
+
+During setup, aish will:
+1. Connect to your endpoint URL
+2. Fetch available models automatically
+3. Present an interactive menu to select your preferred model
+4. Configure everything automatically
+
+## 📝 Bash Session Logging (Optional)
+
+AISH includes optional bash session logging that creates a real-time carbon copy of your terminal session. This enables aish to be truly context-aware.
 
 **To enable bash session logging:**
 
@@ -90,32 +150,30 @@ AISH includes optional bash session logging functionality that creates a real-ti
 
 2. Restart your terminal
 
-The logging will automatically create session files in `~/.local/share/bash_sessions/` and clean up files older than 7 days.
+The logging automatically creates session files in `~/.local/share/bash_sessions/` and cleans up files older than 7 days.
 
 **Note:** The logging functionality is completely separate from the `@aish` command and can be used independently.
 
-## 5. Updating aish
+## 🔄 Updating aish
 
 To update `aish` to the latest version:
 ```bash
 cd ~/Software/aish
-./install.sh  # This will update paths and configuration
+bash setup.sh  # This will update paths and configuration
 ```
 
 Or manually:
 ```bash
 cd ~/Software/aish
-source venv/bin/activate  # If using virtual environment
 git pull
 pip install -r requirements.txt
 ```
 
-## 6. How It Works
+## 🛠️ How It Works
 
-The installation system uses dynamic path resolution:
+- **`setup.sh`** - Automated installation script that sets up everything including model discovery
+- **`aish.py`** - Main AI assistant with rich terminal UI and memory management
+- **`bashrc_extension_aish.sh`** - BASH session logging for context awareness
+- **Dynamic path resolution** - Works from any installation directory
 
-- **`install.sh`** - Determines its own location and finds the appropriate Python interpreter
-- **`aish-config.sh`** - Stores dynamic paths and provides the `@aish` function
-- **`bashrc_extension_aish.sh`** - Provides optional bash session logging with dynamic paths
-
-This makes AISH completely portable - you can install it in any directory and the paths will be automatically configured.
+The system is designed to be completely portable and self-configuring.
