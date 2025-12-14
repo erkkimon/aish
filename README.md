@@ -73,12 +73,49 @@ endpoint_url: http://localhost:11435/v1/chat/completions
 -   `endpoint_url`: The URL for the chat completions API.
 -   `api_key`: Optional. If your service requires an API key, uncomment the line and replace `not-needed` with your key.
 
-## 4. Updating aish
+## 4. Bash Session Logging (Optional)
+
+AISH includes optional bash session logging functionality that creates a real-time carbon copy of your terminal session. This is useful for:
+
+- Keeping a record of your work
+- Reviewing commands later
+- Sharing session logs with others
+
+**To enable bash session logging:**
+
+1. Add this line to your `~/.bashrc`:
+   ```bash
+   source ~/Software/aish/bashrc_extension_aish.sh
+   ```
+
+2. Restart your terminal
+
+The logging will automatically create session files in `~/.local/share/bash_sessions/` and clean up files older than 7 days.
+
+**Note:** The logging functionality is completely separate from the `@aish` command and can be used independently.
+
+## 5. Updating aish
 
 To update `aish` to the latest version:
 ```bash
 cd ~/Software/aish
-source venv312/bin/activate
+./install.sh  # This will update paths and configuration
+```
+
+Or manually:
+```bash
+cd ~/Software/aish
+source venv/bin/activate  # If using virtual environment
 git pull
 pip install -r requirements.txt
 ```
+
+## 6. How It Works
+
+The installation system uses dynamic path resolution:
+
+- **`install.sh`** - Determines its own location and finds the appropriate Python interpreter
+- **`aish-config.sh`** - Stores dynamic paths and provides the `@aish` function
+- **`bashrc_extension_aish.sh`** - Provides optional bash session logging with dynamic paths
+
+This makes AISH completely portable - you can install it in any directory and the paths will be automatically configured.
