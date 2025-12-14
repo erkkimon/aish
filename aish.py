@@ -74,6 +74,203 @@ C_BG_SUBTLE = "\033[48;5;236m" # A subtle dark grey background
 
 # --- Core Functions ---
 
+def get_memory_path():
+    """Returns the path to the memory file."""
+    return os.path.join(USER_CONFIG_DIR, "memory.md")
+
+def load_memory():
+    """Loads the memory content if it exists."""
+    memory_path = get_memory_path()
+    if os.path.exists(memory_path):
+        try:
+            with open(memory_path, 'r') as f:
+                return f.read()
+        except (IOError, OSError) as e:
+            print(f"Warning: Could not read memory file {memory_path}: {e}", file=sys.stderr)
+    return None
+
+def parse_memory_diff(diff_text):
+    """
+    Parses a memory diff instruction from the assistant.
+    Returns: (action, section, content) where action is 'add', 'update', or 'delete'
+    """
+    lines = diff_text.strip().split('\n')
+    if not lines:
+        return None, None, None
+    
+    # Look for action instruction
+    action_line = lines[0].lower()
+    if 'add to memory' in action_line:
+        action = 'add'
+    elif 'update memory' in action_line:
+        action = 'update'
+    elif 'delete from memory' in action_line:
+        action = 'delete'
+    else:
+        return None, None, None
+    
+    # Extract section (second line, typically starts with ## or ###)
+    section = None
+    content = None
+    
+    if len(lines) >= 2:
+        section_line = lines[1].strip()
+        if section_line.startswith('##'):
+            section = section_line
+    
+    # Rest is content (skip empty lines at start)
+    if len(lines) >= 3:
+        content_lines = lines[2:]
+        # Skip leading empty lines
+        while content_lines and not content_lines[0].strip():
+            content_lines.pop(0)
+        content = '\n'.join(content_lines).strip()
+    
+    return action, section, content
+
+def parse_multiple_memory_diffs(response_text):
+    """
+    Parses multiple memory diff instructions from the assistant response.
+    Returns: list of (action, section, content) tuples
+    """
+    diffs = []
+    
+    # Find all markdown code blocks
+    code_blocks = re.findall(r"```(?:markdown|md)?\n(.*?)```", response_text, re.DOTALL)
+    
+    for block in code_blocks:
+        action, section, content = parse_memory_diff(block)
+        if action:
+            diffs.append((action, section, content))
+    
+    return diffs
+
+def apply_memory_diff(action, section, content):
+    """
+    Applies a memory diff to the memory file.
+    Returns: (success, message, new_content)
+    """
+    memory_path = get_memory_path()
+    current_content = load_memory() or ""
+    
+    if action == 'add':
+        if section and content:
+            # Add new section
+            new_content = current_content + f"\n{section}\n{content}\n"
+        else:
+            # Add to end
+            new_content = current_content + f"\n{content}\n" if content else current_content
+    
+    elif action == 'update':
+        if not section:
+            return False, "Update requires a section to identify what to update", current_content
+        
+        # Find and replace section
+        import re
+        section_pattern = re.compile(rf'({re.escape(section)}.*?)(?=##|\Z)', re.DOTALL)
+        
+        if section_pattern.search(current_content):
+            if content:
+                new_content = section_pattern.sub(f'{section}\n{content}\n', current_content)
+            else:
+                # Just the section header with no content
+                new_content = section_pattern.sub(f'{section}\n', current_content)
+        else:
+            # Section doesn't exist, add it
+            new_content = current_content + f"\n{section}\n{content}\n" if content else current_content + f"\n{section}\n"
+    
+    elif action == 'delete':
+        if not section:
+            return False, "Delete requires a section to identify what to delete", current_content
+        
+        # Find and remove section
+        import re
+        section_pattern = re.compile(rf'{re.escape(section)}.*?(?=##|\Z)', re.DOTALL)
+        new_content = section_pattern.sub('', current_content).strip() + '\n'
+    
+    else:
+        return False, f"Unknown action: {action}", current_content
+    
+    # Ensure config directory exists
+    os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+    
+    try:
+        with open(memory_path, 'w') as f:
+            f.write(new_content)
+        return True, f"Memory {action}ed successfully", new_content
+    except (IOError, OSError) as e:
+        return False, f"Failed to update memory: {e}", current_content
+
+def suggest_memory_update():
+    """
+    Injects a memory update suggestion into the conversation when a task is completed.
+    This asks the assistant to consider what information should be preserved.
+    """
+    return """
+    
+    The task has been completed. Before finishing, please review what happened and consider if there's any information that should be added to, updated in, or removed from memory.
+    
+    Think about:
+    - New preferences or behavioral guidelines discovered
+    - Important environment information learned (extract actual values, not placeholders)
+    - Changes to workflows or processes
+    - Any information that would help you better assist the boss in future sessions
+    
+    CRITICAL: Extract actual discovered values, not patterns or placeholders. For example:
+    - BAD: "Kernel version pattern: Linux [hostname] [version]"
+    - GOOD: "Kernel version: Linux sanitee 6.1.78-1-lts x86_64"
+    
+    If there is relevant information to preserve, provide it in the memory update format. If nothing needs to be added or changed, simply provide your final summary.
+    
+    Remember to use the format:
+    ```markdown
+    Add to memory:
+    ## Section Name
+    - Specific information with actual values
+    
+    Update memory:
+    ## Section Name
+    - Updated information with actual values
+    
+    Delete from memory:
+    ## Section Name
+    ```
+    """
+
+def apply_memory_diff_with_retry(action, section, content, max_retries=10):
+    """
+    Applies a memory diff with retry logic in case of failures.
+    Returns: (success, message, new_content)
+    """
+    for attempt in range(max_retries):
+        success, message, new_content = apply_memory_diff(action, section, content)
+        if success:
+            return True, message, new_content
+        
+        if attempt < max_retries - 1:
+            # Wait a bit before retrying (optional, could add exponential backoff)
+            import time
+            time.sleep(0.1 * (attempt + 1))  # Simple linear backoff
+    
+    return False, f"Failed after {max_retries} attempts: {message}", content
+
+def edit_memory(new_content):
+    """
+    Legacy function: Edits the memory file with new content (full replacement).
+    Returns: (success, message)
+    """
+    memory_path = get_memory_path()
+    
+    # Ensure config directory exists
+    os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+    
+    try:
+        with open(memory_path, 'w') as f:
+            f.write(new_content)
+        return True, f"Memory updated successfully at {memory_path}"
+    except (IOError, OSError) as e:
+        return False, f"Failed to update memory: {e}"
+
 def get_initial_context():
     """Gathers initial context to provide to the agent."""
     context = {
@@ -94,13 +291,22 @@ def get_initial_context():
                 context["bash_session_history"] = {
                     "source_file": bash_session_log,
                     "last_50_lines": [line.rstrip() for line in last_50_lines],
-                    "explanation": "These are the last 50 lines of bash output from user's current session"
+                    "explanation": "These are the last 50 lines of bash output from your current session"
                 }
         except (IOError, OSError) as e:
             context["bash_session_history"] = {
                 "error": f"Could not read bash session log: {e}",
                 "source_file": bash_session_log
             }
+    
+    # Add memory content if available
+    memory_content = load_memory()
+    if memory_content:
+        context["memory"] = {
+            "source_file": get_memory_path(),
+            "content": memory_content,
+            "explanation": "This is the persistent memory containing information about preferences, environment, and useful context"
+        }
     
     return context
 
@@ -136,7 +342,55 @@ def call_llm(messages):
 
 def get_system_prompt():
     """Defines the agent's instructions and persona."""
-    return """
+    memory_info = f"""
+    
+    ## Memory Management:
+    You have access to a persistent memory file at {get_memory_path()}. This memory contains important information about:
+    - Boss preferences and behavioral expectations
+    - Environment details and configurations
+    - Useful context from previous sessions
+    - Workflow preferences
+    
+    When you complete a task, you should consider if there's any information that should be added to, updated in, or removed from memory. This includes:
+    - New preferences or behavioral guidelines
+    - Important environment information discovered
+    - Changes to workflows or processes
+    - Any information that would help you better assist the boss in future sessions
+    
+    ### How to Update Memory:
+    To update memory, provide your suggestion in this format using markdown code blocks:
+    
+    **For adding new information:**
+    ```markdown
+    Add to memory:
+    ## Section Name
+    - New information line 1
+    - New information line 2
+    ```
+    
+    **For updating existing information:**
+    ```markdown
+    Update memory:
+    ## Section Name
+    - Updated information (replaces the entire section content)
+    ```
+    
+    **For deleting information:**
+    ```markdown
+    Delete from memory:
+    ## Section Name
+    ```
+    
+    The memory system will automatically handle the diff and apply the changes. Always wrap your memory update suggestions in markdown code blocks.
+    The memory should remain concise and free of useless information. Suggest deletions when information becomes outdated or irrelevant.
+    """ if load_memory() is not None else """
+    
+    ## Memory Management:
+    A memory file will be created at {get_memory_path()} to store important information about boss preferences, environment details, and useful context.
+    When completing tasks, consider what information should be preserved for future sessions.
+    """
+    
+    return f"""
     You are a helpful AI assistant running in a shell environment. Your goal is to assist the boss by executing shell commands to accomplish their tasks.
 
     ## Your Workflow:
@@ -153,6 +407,7 @@ def get_system_prompt():
     -   If a command fails, analyze the error and try to correct it.
     -   Your task is complete when you believe the boss's original request has been fully addressed.
     -   **Questions:** When you need to ask the boss a question, provide clear options and allow for custom input.
+    {memory_info}
     """
 
 def parse_llm_response(response_text):
@@ -310,7 +565,46 @@ if __name__ == "__main__":
         explanation, command_to_run = parse_llm_response(assistant_response)
 
         if not command_to_run:
+            # Task is complete, now ask about memory updates
             console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
+            
+            # Inject memory update consideration message
+            memory_prompt = suggest_memory_update()
+            messages.append({"role": "user", "content": memory_prompt})
+            
+            # Get assistant's response about memory updates
+            with console.status("[bold green]Considering memory updates..."):
+                memory_llm_response = call_llm(messages)
+            
+            if memory_llm_response:
+                memory_assistant_response = memory_llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                # Check if assistant suggested memory updates
+                memory_update_match = re.search(r"```(?:markdown|md)?\n(.*?)```", memory_assistant_response, re.DOTALL)
+                if memory_update_match:
+                    memory_content = memory_update_match.group(1).strip()
+                    
+                    # Parse the memory diff
+                    action, section, content = parse_memory_diff(memory_content)
+                    
+                    if action:
+                        console.print(Panel("Memory update suggested:", title="🧠 Memory Update", border_style="magenta"))
+                        console.print(Panel(Syntax(memory_content, "markdown", theme="monokai", line_numbers=False), border_style="magenta"))
+                        
+                        try:
+                            choice = console.input("[bold magenta]Update memory? (Y/n):[/bold magenta] ").lower().strip()
+                        except (EOFError, KeyboardInterrupt):
+                            choice = 'n'
+                        
+                        if choice in ('y', 'yes', ''):
+                            success, message, new_content = apply_memory_diff_with_retry(action, section, content)
+                            if success:
+                                console.print(f"[green]✓ {message}[/green]")
+                            else:
+                                console.print(f"[red]✗ {message}[/red]")
+                        else:
+                            console.print("[yellow]Memory update cancelled.[/yellow]")
+            
             break
 
         # Check if this appears to be a simple question that doesn't need command execution
@@ -351,6 +645,35 @@ if __name__ == "__main__":
                 except (EOFError, KeyboardInterrupt):
                     console.print("\n[yellow]Question cancelled by boss.[/yellow]")
                     break
+
+        # Check if this is a memory update request
+        memory_match = re.search(r"```(?:markdown|md)?\n(.*?)```", assistant_response, re.DOTALL)
+        if memory_match:
+            memory_content = memory_match.group(1).strip()
+            
+            # Parse the memory diff
+            action, section, content = parse_memory_diff(memory_content)
+            
+            if action:
+                console.print(Panel("Memory update suggested by assistant:", title="🧠 Memory Update", border_style="magenta"))
+                console.print(Panel(Syntax(memory_content, "markdown", theme="monokai", line_numbers=False), border_style="magenta"))
+                
+                try:
+                    choice = console.input("[bold magenta]Update memory? (Y/n):[/bold magenta] ").lower().strip()
+                except (EOFError, KeyboardInterrupt):
+                    choice = 'n'
+                
+                if choice in ('y', 'yes', ''):
+                    success, message, new_content = apply_memory_diff_with_retry(action, section, content)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                    else:
+                        console.print(f"[red]✗ {message}[/red]")
+                else:
+                    console.print("[yellow]Memory update cancelled.[/yellow]")
+            
+            console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
+            break
 
         # --- Plan and Command Panels ---
         console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
