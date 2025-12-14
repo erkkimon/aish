@@ -137,20 +137,22 @@ def call_llm(messages):
 def get_system_prompt():
     """Defines the agent's instructions and persona."""
     return """
-    You are a helpful AI assistant running in a shell environment. Your goal is to assist the user by executing shell commands to accomplish their tasks.
+    You are a helpful AI assistant running in a shell environment. Your goal is to assist the boss by executing shell commands to accomplish their tasks.
 
     ## Your Workflow:
-    1.  **Analyze:** Understand the user's request and the context provided.
+    1.  **Analyze:** Understand the boss's request and the context provided.
     2.  **Plan:** Formulate a step-by-step plan.
     3.  **Propose:** Explain your plan clearly and concisely in plain text. Do NOT use markdown for the explanation. Then, propose the *next single shell command* in a fenced code block like ```bash\ncommand\n```. The explanation must always precede the code block.
-    4.  **Summarize:** When you believe the user's original request is fully resolved, do NOT propose a command. Instead, provide a concise summary of the key findings and the final outcome. Start your summary with the phrase "Final Summary:".
+    4.  **Summarize:** When you believe the boss's original request is fully resolved, do NOT propose a command. Instead, provide a concise summary of the key findings and the final outcome. Start your summary with the phrase "Final Summary:".
 
     ## Important Rules:
-    -   **Efficiency:** To be maximally efficient, use shell script constructs like `for` loops, pipes, and command chains (`&&`) to perform multiple steps in a single command when it is safe and logical to do so. This reduces the need for user interaction.
+    -   **Direct Language:** Address the boss directly using "you" and "your" instead of "the user" or "the boss's". For example, say "your request requires this" not "the boss's request requires this".
+    -   **Efficiency:** To be maximally efficient, use shell script constructs like `for` loops, pipes, and command chains (`&&`) to perform multiple steps in a single command when it is safe and logical to do so. This reduces the need for interaction.
     -   **Clarity:** Propose only one command block at a time. Explain your reasoning for the entire block clearly.
     -   **Safety:** If a command is complex or potentially destructive, break it down into smaller, safer steps.
     -   If a command fails, analyze the error and try to correct it.
-    -   Your task is complete when you believe the user's original request has been fully addressed.
+    -   Your task is complete when you believe the boss's original request has been fully addressed.
+    -   **Questions:** When you need to ask the boss a question, provide clear options and allow for custom input.
     """
 
 def parse_llm_response(response_text):
@@ -176,6 +178,100 @@ def execute_command(command):
         return result.stdout, result.stderr, result.returncode
     except Exception as e:
         return None, f"Execution error: {e}", 1
+
+def is_question_and_parse_options(response_text):
+    """
+    Detects if the response is asking a question and parses any options.
+    Returns: (is_question, options_list) where options_list is None or list of options
+    """
+    # Check if it's a question
+    question_indicators = [
+        "?", "should i", "would you like", "do you want", "which", "what", "how", "when", "where", "why",
+        "please select", "please choose", "choose one", "select an option"
+    ]
+    
+    lower_text = response_text.lower()
+    is_q = any(indicator in lower_text for indicator in question_indicators)
+    
+    if not is_q:
+        return False, None
+    
+    # Try to parse options (look for numbered or bulleted lists)
+    options = []
+    lines = response_text.split('\n')
+    
+    for line in lines:
+        stripped = line.strip()
+        # Match patterns like "1.", "1)", "-", "*", "•"
+        if (stripped.startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')) or
+            stripped.startswith(('1)', '2)', '3)', '4)', '5)', '6)', '7)', '8)', '9)')) or
+            stripped.startswith(('- ', '* ', '• '))):
+            # Remove the bullet/number and clean up
+            clean_line = stripped
+            for prefix in ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.',
+                          '1)', '2)', '3)', '4)', '5)', '6)', '7)', '8)', '9)',
+                          '- ', '* ', '• ']:
+                if clean_line.startswith(prefix):
+                    clean_line = clean_line[len(prefix):].strip()
+                    break
+            if clean_line:
+                options.append(clean_line)
+    
+    # Only return options if we found at least 2
+    if len(options) >= 2:
+        return True, options
+    
+    return True, None
+
+def ask_question_with_options(console, question_text, options):
+    """
+    Presents an interactive menu with options and a custom input field.
+    Returns the selected option or custom text.
+    """
+    from rich.prompt import Prompt
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.text import Text
+    
+    # Display the question
+    console.print(Panel(question_text, title="❓ Question", border_style="yellow"))
+    
+    # Create menu items
+    menu_items = options + ["[Custom response...]"]
+    
+    # For now, use simple numbered selection (full arrow key support would require more complex UI)
+    console.print("\n[yellow]Select an option:[/yellow]")
+    for i, option in enumerate(menu_items, 1):
+        if i == len(menu_items):
+            console.print(f"  [cyan]{i}.[/cyan] {option}")
+        else:
+            console.print(f"  [cyan]{i}.[/cyan] {option}")
+    
+    while True:
+        try:
+            choice = Prompt.ask("\n[yellow]Enter number or custom text[/yellow]", console=console)
+            
+            # Try to parse as number first
+            try:
+                num = int(choice.strip())
+                if 1 <= num <= len(menu_items):
+                    if num == len(menu_items):
+                        # Custom response selected
+                        custom = Prompt.ask("[yellow]Enter your response[/yellow]", console=console)
+                        return custom
+                    else:
+                        return options[num - 1]
+                else:
+                    console.print("[red]Invalid selection. Please try again.[/red]")
+            except ValueError:
+                # Not a number, treat as custom response
+                if choice.strip():
+                    return choice
+                else:
+                    console.print("[red]Please enter a valid selection or custom text.[/red]")
+                    
+        except (EOFError, KeyboardInterrupt):
+            return None
 
 # --- Main Execution ---
 
@@ -217,19 +313,58 @@ if __name__ == "__main__":
             console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
             break
 
+        # Check if this appears to be a simple question that doesn't need command execution
+        simple_question_indicators = [
+            "is this", "is that", "is the", "are these", "are those",
+            "does this", "does that", "what is", "what are",
+            "syntactically", "syntax", "correct", "okay", "ok"
+        ]
+        
+        lower_explanation = explanation.lower()
+        if any(indicator in lower_explanation for indicator in simple_question_indicators) and len(command_to_run.strip()) < 10:
+            # Likely a simple question, just answer without running commands
+            console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Answer", border_style="green"))
+            break
+
+        # Check if the assistant is asking a question with options
+        is_question, options = is_question_and_parse_options(assistant_response)
+        if is_question:
+            if options:
+                # Interactive option selection
+                response = ask_question_with_options(console, explanation, options)
+                if response is None:
+                    console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                    break
+                messages.append({"role": "user", "content": f"Boss response: {response}"})
+                continue
+            else:
+                # Open-ended question - treat as comment mode
+                try:
+                    console.print(Panel(explanation, title="❓ Question", border_style="yellow"))
+                    comment_prompt = f"[yellow]{EMOJI_COMMENT} Your response: [/yellow]"
+                    comment = console.input(comment_prompt)
+                    if not comment.strip():
+                        console.print("[red]Response cannot be empty.[/red]")
+                        continue
+                    messages.append({"role": "user", "content": f"Boss response: {comment}"})
+                    continue
+                except (EOFError, KeyboardInterrupt):
+                    console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                    break
+
         # --- Plan and Command Panels ---
         console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
         console.print(Panel(Syntax(command_to_run, "bash", theme="monokai", line_numbers=False), title=f"{EMOJI_COMMAND} Command", border_style="blue"))
 
         # --- User Prompt ---
         try:
-            choice_prompt = f"[bold yellow]Execute? (y/n/c):[/bold yellow] "
+            choice_prompt = f"[bold yellow]Execute? (Y/n/c):[/bold yellow] "
             choice = console.input(choice_prompt).lower().strip()
         except (EOFError, KeyboardInterrupt):
             choice = 'n'
 
         if choice in ('n', 'no'):
-            console.print("[yellow]Execution stopped by user.[/yellow]")
+            console.print("[yellow]Execution stopped by boss.[/yellow]")
             break
         elif choice in ('c', 'comment'):
             try:
@@ -238,10 +373,10 @@ if __name__ == "__main__":
                 if not comment.strip():
                     console.print("[red]Comment cannot be empty.[/red]")
                     continue
-                messages.append({"role": "user", "content": f"User comment: {comment}"})
+                messages.append({"role": "user", "content": f"Boss comment: {comment}"})
                 continue
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Execution stopped by user.[/yellow]")
+                console.print("\n[yellow]Execution stopped by boss.[/yellow]")
                 break
         elif choice in ('y', 'yes', ''):
             stdout, stderr, return_code = execute_command(command_to_run)
