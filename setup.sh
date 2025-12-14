@@ -25,10 +25,32 @@ print_info() {
 }
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Works with both bash and zsh
+if [ -n "$BASH_VERSION" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SHELL_TYPE="bash"
+elif [ -n "$ZSH_VERSION" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${(%):-%N}")" && pwd)"
+    SHELL_TYPE="zsh"
+else
+    # Fallback for other shells
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    SHELL_TYPE="sh"
+fi
 AISH_PROJECT_DIR="$SCRIPT_DIR"
 
 print_info "AISH project directory: $AISH_PROJECT_DIR"
+print_info "Detected shell: $SHELL_TYPE"
+
+# Detect OS
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    OS_TYPE="linux"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    OS_TYPE="macos"
+else
+    OS_TYPE="unknown"
+fi
+print_info "Detected OS: $OS_TYPE"
 
 # Find Python interpreter
 PYTHON_PATH=""
@@ -256,51 +278,66 @@ else
     print_info "User config file already exists at $USER_CONFIG_PATH"
 fi
 
-# Add configuration to ~/.bashrc if not already present
-BASHRC_PATH="$HOME/.bashrc"
-
-if [ -f "$BASHRC_PATH" ]; then
-    if grep -q "export AISH_DIR=" "$BASHRC_PATH"; then
-        print_info "AISH configuration already included in $BASHRC_PATH"
-    else
-        print_info "Adding AISH configuration to $BASHRC_PATH"
-        echo "" >> "$BASHRC_PATH"
-        echo "# AISH Configuration" >> "$BASHRC_PATH"
-        echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$BASHRC_PATH"
-        echo "@aish() { \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"; }" >> "$BASHRC_PATH"
-        echo "export -f @aish" >> "$BASHRC_PATH"
-        echo "source \${AISH_DIR}/bashr_extension_logging.sh" >> "$BASHRC_PATH"
-        print_success "Added AISH configuration to $BASHRC_PATH"
-    fi
+# Add configuration to shell config file
+if [ "$SHELL_TYPE" = "bash" ]; then
+    SHELL_CONFIG_PATH="$HOME/.bashrc"
+    ALIAS_NAME="@aish"
+elif [ "$SHELL_TYPE" = "zsh" ]; then
+    SHELL_CONFIG_PATH="$HOME/.zshrc"
+    ALIAS_NAME="@aish"
 else
-    print_info "Creating $BASHRC_PATH"
-    echo "# AISH Configuration" > "$BASHRC_PATH"
-    echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$BASHRC_PATH"
-    echo "@aish() {" >> "$BASHRC_PATH"
-    echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$BASHRC_PATH"
-    echo "}" >> "$BASHRC_PATH"
-    echo "export -f @aish" >> "$BASHRC_PATH"
-    print_success "Created $BASHRC_PATH with AISH configuration"
+    # Fallback for other shells
+    SHELL_CONFIG_PATH="$HOME/.profile"
+    ALIAS_NAME="@aish"
 fi
 
-# Also handle bash_profile if it exists
-# BASHPROFILE_PATH="$HOME/.bash_profile"
-# if [ -f "$BASHPROFILE_PATH" ]; then
-#     if ! grep -q "export AISH_DIR=" "$BASHPROFILE_PATH"; then
-#         print_info "Adding AISH configuration to $BASHPROFILE_PATH"
-#         echo "" >> "$BASHPROFILE_PATH"
-#         echo "# AISH Configuration" >> "$BASHPROFILE_PATH"
-#         echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$BASHPROFILE_PATH"
-#         echo "@aish() {" >> "$BASHPROFILE_PATH"
-#         echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$BASHPROFILE_PATH"
-#         echo "}" >> "$BASHPROFILE_PATH"
-#         echo "export -f @aish" >> "$BASHPROFILE_PATH"
-#         echo "source \$\{AISH_DIR\}/bashr_extension_logging.sh" >> "$BASHPROFILE_PATH"
-#         echo "# trukene" >> "$BASHPROFILE_PATH"
-#         print_success "Added AISH configuration to $BASHPROFILE_PATH"
-#     fi
-# fi
+if [ -f "$SHELL_CONFIG_PATH" ]; then
+    if grep -q "export AISH_DIR=" "$SHELL_CONFIG_PATH"; then
+        print_info "AISH configuration already included in $SHELL_CONFIG_PATH"
+    else
+        print_info "Adding AISH configuration to $SHELL_CONFIG_PATH"
+        echo "" >> "$SHELL_CONFIG_PATH"
+        echo "# AISH Configuration" >> "$SHELL_CONFIG_PATH"
+        echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$SHELL_CONFIG_PATH"
+        
+        if [ "$SHELL_TYPE" = "bash" ]; then
+            # Bash function
+            echo "$ALIAS_NAME() { \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"; }" >> "$SHELL_CONFIG_PATH"
+            echo "export -f $ALIAS_NAME" >> "$SHELL_CONFIG_PATH"
+        else
+            # ZSH and other shells function
+            echo "$ALIAS_NAME() {" >> "$SHELL_CONFIG_PATH"
+            echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$SHELL_CONFIG_PATH"
+            echo "}" >> "$SHELL_CONFIG_PATH"
+        fi
+        
+        # Add logging extension if the file exists
+        if [ -f "$AISH_PROJECT_DIR/bashr_extension_logging.sh" ]; then
+            echo "source \${AISH_DIR}/bashr_extension_logging.sh" >> "$SHELL_CONFIG_PATH"
+        fi
+        
+        print_success "Added AISH configuration to $SHELL_CONFIG_PATH"
+    fi
+else
+    print_info "Creating $SHELL_CONFIG_PATH"
+    echo "# AISH Configuration" > "$SHELL_CONFIG_PATH"
+    echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$SHELL_CONFIG_PATH"
+    echo "$ALIAS_NAME() {" >> "$SHELL_CONFIG_PATH"
+    echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$SHELL_CONFIG_PATH"
+    echo "}" >> "$SHELL_CONFIG_PATH"
+    
+    if [ "$SHELL_TYPE" = "bash" ]; then
+        echo "export -f $ALIAS_NAME" >> "$SHELL_CONFIG_PATH"
+    fi
+    
+    # Add logging extension if the file exists
+    if [ -f "$AISH_PROJECT_DIR/bashr_extension_logging.sh" ]; then
+        echo "source \${AISH_DIR}/bashr_extension_logging.sh" >> "$SHELL_CONFIG_PATH"
+    fi
+    
+    print_success "Created $SHELL_CONFIG_PATH with AISH configuration"
+fi
 
 print_success "Installation completed successfully!"
-print_info "Please restart your terminal or run: source $CONFIG_FILE"
+print_info "Please restart your terminal or run: source $SHELL_CONFIG_PATH"
 print_info "Then you can use: @aish <your command>"

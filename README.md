@@ -29,6 +29,12 @@ cd ~/Software/aish
 bash setup.sh
 ```
 
+**Cross-Platform Support:**
+- **Linux**: Works with Bash and ZSH
+- **macOS**: Fully compatible with both Bash and ZSH
+- **Shell Detection**: Automatically detects and configures for your shell (bash/zsh)
+- **OS Detection**: Handles platform-specific differences automatically
+
 The setup script will:
 1. Create a Python virtual environment automatically
 2. Install all required dependencies
