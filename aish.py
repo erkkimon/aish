@@ -13,7 +13,20 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 # --- Configuration Loader ---
-CONFIG_PATH = "config.yaml"
+# Look for config.yaml in user's config directory or script directory
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_CONFIG_DIR = os.path.expanduser("~/.aish")
+USER_CONFIG_PATH = os.path.join(USER_CONFIG_DIR, "config.yaml")
+
+# Use user config if it exists, otherwise use script directory
+if os.path.exists(USER_CONFIG_PATH):
+    CONFIG_PATH = USER_CONFIG_PATH
+else:
+    CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
+
+# Check for AISH_DIR environment variable for the script location
+AISH_DIR = os.environ.get("AISH_DIR", SCRIPT_DIR)
+
 DEFAULT_CONFIG = """
 # Configuration for the aish agent.
 model: Devstral-Small-2505-abliterated.i1-Q2_K_S
@@ -83,7 +96,17 @@ def call_llm(messages):
         "temperature": 0.7,
     }
     try:
-        response = requests.post(CONFIG.get("endpoint_url"), headers=headers, data=json.dumps(data))
+        # Append /chat/completions to the endpoint URL if not already present
+        endpoint_url = CONFIG.get("endpoint_url")
+        if not endpoint_url.endswith("/chat/completions"):
+            if endpoint_url.endswith("/v1"):
+                endpoint_url = f"{endpoint_url}/chat/completions"
+            elif endpoint_url.endswith("/v1/"):
+                endpoint_url = f"{endpoint_url}chat/completions"
+            else:
+                endpoint_url = f"{endpoint_url.rstrip('/')}/v1/chat/completions"
+        
+        response = requests.post(endpoint_url, headers=headers, data=json.dumps(data))
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:

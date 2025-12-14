@@ -1,0 +1,5 @@
+
+# Configuration for the aish agent.
+model: ministral-3:14b
+endpoint_url: http://ferocitee:11434/v1
+# api_key: not-needed # Uncomment if you use a provider that requires an api key
