@@ -17,7 +17,7 @@ export -f @aish
 if [[ $- == *i* ]] && [[ -z $SCRIPT_RUNNING ]]; then
   export SCRIPT_RUNNING=1
 
-  LOGDIR=$HOME/.local/share/bash_sessions
+  LOGDIR=$HOME/.aish/logs
   mkdir -p "$LOGDIR"
   export BASH_SESSION_CARBON_COPY=$LOGDIR/session_$(date +%Y%m%d_%H%M%S)_$$.log
   find "$LOGDIR" -name 'session_*.log' -mtime +7 -delete 2>/dev/null

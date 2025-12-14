@@ -129,6 +129,7 @@ if [ -f "$BASHRC_PATH" ]; then
         echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$BASHRC_PATH"
         echo "}" >> "$BASHRC_PATH"
         echo "export -f @aish" >> "$BASHRC_PATH"
+        echo "source \${AISH_DIR}/bashr_extension_logging.sh" >> "$BASHRC_PATH"
         print_success "Added AISH configuration to $BASHRC_PATH"
     fi
 else
@@ -143,34 +144,23 @@ else
 fi
 
 # Also handle bash_profile if it exists
-BASHPROFILE_PATH="$HOME/.bash_profile"
-if [ -f "$BASHPROFILE_PATH" ]; then
-    if ! grep -q "export AISH_DIR=" "$BASHPROFILE_PATH"; then
-        print_info "Adding AISH configuration to $BASHPROFILE_PATH"
-        echo "" >> "$BASHPROFILE_PATH"
-        echo "# AISH Configuration" >> "$BASHPROFILE_PATH"
-        echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$BASHPROFILE_PATH"
-        echo "@aish() {" >> "$BASHPROFILE_PATH"
-        echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$BASHPROFILE_PATH"
-        echo "}" >> "$BASHPROFILE_PATH"
-        echo "export -f @aish" >> "$BASHPROFILE_PATH"
-        print_success "Added AISH configuration to $BASHPROFILE_PATH"
-    fi
-fi
+# BASHPROFILE_PATH="$HOME/.bash_profile"
+# if [ -f "$BASHPROFILE_PATH" ]; then
+#     if ! grep -q "export AISH_DIR=" "$BASHPROFILE_PATH"; then
+#         print_info "Adding AISH configuration to $BASHPROFILE_PATH"
+#         echo "" >> "$BASHPROFILE_PATH"
+#         echo "# AISH Configuration" >> "$BASHPROFILE_PATH"
+#         echo "export AISH_DIR=\"$AISH_PROJECT_DIR\"" >> "$BASHPROFILE_PATH"
+#         echo "@aish() {" >> "$BASHPROFILE_PATH"
+#         echo "    \"\$AISH_DIR/venv/bin/python\" \"\$AISH_DIR/aish.py\" \"\$@\"" >> "$BASHPROFILE_PATH"
+#         echo "}" >> "$BASHPROFILE_PATH"
+#         echo "export -f @aish" >> "$BASHPROFILE_PATH"
+#         echo "source \$\{AISH_DIR\}/bashr_extension_logging.sh" >> "$BASHPROFILE_PATH"
+#         echo "# trukene" >> "$BASHPROFILE_PATH"
+#         print_success "Added AISH configuration to $BASHPROFILE_PATH"
+#     fi
+# fi
 
 print_success "Installation completed successfully!"
 print_info "Please restart your terminal or run: source $CONFIG_FILE"
 print_info "Then you can use: @aish <your command>"
-
-# Optional: Add bash session logging configuration
-read -p "Do you want to enable bash session logging? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Create a modified version of the bash extension with dynamic paths
-    BASH_EXT_PATH="$AISH_PROJECT_DIR/bashrc_extension_aish.sh"
-    if [ -f "$BASH_EXT_PATH" ]; then
-        print_info "Bash session logging extension available at: $BASH_EXT_PATH"
-        print_info "To enable it, add this line to your ~/.bashrc:"
-        echo "  source $BASH_EXT_PATH"
-    fi
-fi

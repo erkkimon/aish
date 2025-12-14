@@ -8,3 +8,6 @@ __pycache__/
 
 # User-specific configuration
 config.json
+
+# Development stuff
+_todo.md
