@@ -6,8 +6,6 @@ AISH is the world's first context-aware inline devops sh agent. It is local-firs
 
 *This demo was created using Devstral-2505 24B Q4 running on [vllama](https://github.com/erkkimon/vllama) which is world's fastest drop-in replacement for ollama.*
 
-`aish` is a simple, interactive AI assistant that runs in your shell. It uses a local large language model (LLM) to help you accomplish tasks by proposing and executing shell commands for you.
-
 ## 🚀 Features
 
 - **In-line Chatting**: Tag `@aish` anywhere in your terminal session for instant assistance, and it works on any bash terminal including SSH
