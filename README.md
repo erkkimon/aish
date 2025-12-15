@@ -1,17 +1,17 @@
 # AISH ­&ndash; inline AI agent for devops
 
+AISH is the world's first context-aware inline devops sh agent. It is local-first but works also with any commercial OpenAI compatible LLM. Delegate shell tasks to aish who lives in the terminal. You can do in-line chatting with aish. Just mention `@aish` and send a request and `@aish` will complete it for you.
+
 ![aish demo](assets/aish_demo.gif)
 
 *This demo was created using Devstral-2505 24B Q4 running on [vllama](https://github.com/erkkimon/vllama) which is world's fastest drop-in replacement for ollama.*
-
-AISH is the world's first context-aware inline devops sh agent. It is local-first but works also with any commercial OpenAI compatible LLM. Delegate shell tasks to aish who lives in the terminal. You can do in-line chatting with aish. Just mention `@aish` and send a request and `@aish` will complete it for you.
 
 `aish` is a simple, interactive AI assistant that runs in your shell. It uses a local large language model (LLM) to help you accomplish tasks by proposing and executing shell commands for you.
 
 ## 🚀 Features
 
 - **In-line Chatting**: Tag `@aish` anywhere in your terminal session for instant assistance, and it works on any bash terminal including SSH
-- **Context Awareness**: aish sees your bash session history and can reference previous commands and outputs
+- **Context Awareness**: aish sees your bash session without initiating agentic sessions and can reference previous commands and outputs
 - **Interactive Command Execution**: Approve, deny, or comment on proposed commands before execution
 - **Memory System**: Persistent memory that learns your preferences and environment details across sessions
 - **Smart Model Selection**: Automatic model discovery from your LLM endpoint during setup
