@@ -83,7 +83,7 @@ fi
 fetch_models() {
     local endpoint_url="$1"
     local api_key="$2"
-    
+
     # Construct models endpoint URL
     local models_url="${endpoint_url%/}"
     if [[ "$models_url" == *"/v1" ]]; then
@@ -93,19 +93,27 @@ fetch_models() {
     else
         models_url="${models_url}/v1/models"
     fi
-    
-    # Make API call to get models
-    local auth_header=""
+
+    # Build curl arguments as an array to handle quoting correctly
+    local curl_args=(-s -w "\n%{http_code}" --connect-timeout 10 --max-time 30)
     if [ -n "$api_key" ] && [ "$api_key" != "not-needed" ]; then
-        auth_header="-H \"Authorization: Bearer $api_key\""
+        curl_args+=(-H "Authorization: Bearer $api_key")
     fi
-    
-    # Use curl to fetch models, suppress errors
+    curl_args+=("$models_url")
+
+    # Use curl to fetch models
     local response
-    response=$(curl -s -w "\n%{http_code}" $auth_header "$models_url" 2>/dev/null)
+    response=$(curl "${curl_args[@]}" 2>&1)
+    local curl_exit_code=$?
     local http_code=$(echo "$response" | tail -n1)
     local json_response=$(echo "$response" | head -n-1)
     
+    # Check for curl errors
+    if [ $curl_exit_code -ne 0 ]; then
+        echo "DEBUG: curl failed with exit code $curl_exit_code" >&2
+        return 1
+    fi
+
     if [ "$http_code" = "200" ] && [ -n "$json_response" ]; then
         # Parse JSON to extract model names using Python for reliability
         local models
@@ -124,16 +132,21 @@ try:
         models = []
     for model in models:
         print(model)
-except:
-    pass
-" 2>/dev/null)
-        
+except Exception as e:
+    print(f'DEBUG: JSON parse error: {e}', file=sys.stderr)
+")
+
         if [ -n "$models" ]; then
             echo "$models"
             return 0
         fi
+    else
+        echo "DEBUG: HTTP $http_code from $models_url" >&2
+        if [ -n "$json_response" ]; then
+            echo "DEBUG: Response: ${json_response:0:200}" >&2
+        fi
     fi
-    
+
     return 1
 }
 
@@ -194,9 +207,9 @@ if [ ! -f "$USER_CONFIG_PATH" ]; then
         read -p "API key [not-needed]: " USER_API_KEY
         USER_API_KEY=${USER_API_KEY:-$DEFAULT_API_KEY}
         
-        # Try to fetch available models
+        # Try to fetch available models (use || true to prevent set -e from exiting on failure)
         print_info "Fetching available models from $USER_ENDPOINT..."
-        AVAILABLE_MODELS=$(fetch_models "$USER_ENDPOINT" "$USER_API_KEY")
+        AVAILABLE_MODELS=$(fetch_models "$USER_ENDPOINT" "$USER_API_KEY") || true
         
         USER_MODEL=""
         if [ -n "$AVAILABLE_MODELS" ]; then

@@ -109,20 +109,35 @@ When aish proposes a command, you can:
 
 ### Memory Management
 
-aish has persistent memory that learns from your interactions:
+aish has persistent memory that stores **system state** - durable facts about your environment:
 
 ```bash
-$ @aish I prefer using ripgrep instead of grep
-🤖 Plan: I'll add this preference to memory so I remember to use ripgrep in future commands.
-...
+$ @aish remember that I prefer vim over nano
+🧠 Memory Update: Added preference
 ✓ Memory updated successfully
+
+$ @aish open that config file
+🛠️ Command: vim config.yaml   # aish remembers your preference!
 ```
 
-The memory system automatically suggests updates when tasks are completed, storing:
-- Your preferences and behavioral guidelines
-- Environment details and configurations
-- Workflow preferences
-- Useful context from previous sessions
+The memory stores current facts, not history:
+- **User preferences**: "prefers vim, uses 4-space indentation"
+- **System configuration**: "nginx installed, serves /var/www/html"
+- **Project conventions**: "uses Python 3.11 with poetry"
+- **Custom setups**: "backup script at ~/scripts/backup.sh"
+
+### Interactive Programs
+
+aish properly handles interactive terminal programs. When you ask to open files in vim, less, htop, etc., they run with full terminal access:
+
+```bash
+$ @aish open the log file in vim
+🛠️ Command: vim /var/log/app.log
+Execute? (Y/n/c): y
+# vim opens normally with full interactivity
+```
+
+Supported interactive programs: vim, nano, less, htop, man, ssh, tmux, and more.
 
 ## ⚙️ Configuration
 
@@ -138,6 +153,16 @@ During setup, aish will:
 2. Fetch available models automatically
 3. Present an interactive menu to select your preferred model
 4. Configure everything automatically
+
+### Supported Providers
+
+- **Local LLMs**: Ollama, vLLaMA, LocalAI, and other OpenAI-compatible servers
+- **Commercial APIs**: OpenAI, Kimi Code API, and other OpenAI-compatible providers
+
+For **Kimi Code API**, use:
+- Endpoint: `https://api.kimi.com/coding/v1`
+- Model: `kimi-for-coding`
+- API key from your Kimi membership page
 
 ## 📝 Bash Session Logging (Optional)
 
