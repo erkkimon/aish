@@ -503,6 +503,7 @@ def get_system_prompt():
     -   **Safety:** If a command is complex or potentially destructive, break it down into smaller, safer steps.
     -   If a command fails, analyze the error and try to correct it.
     -   When listing steps in your explanation, you're describing what YOU will do, not asking the user to choose. The steps are sequential actions you'll take.
+    -   When suggesting commands that are interactive by default, prefer adding non-interactive flags such as --noconfirm, --yes, or --accept.
     {memory_info}
     """
 
