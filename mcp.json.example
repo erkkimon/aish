@@ -1,0 +1,88 @@
+{
+  "servers": {
+    "filesystem": {
+      "_comment": "Local filesystem access - spawns as subprocess via stdio",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
+      "env": {}
+    },
+
+    "github": {
+      "_comment": "GitHub API integration - requires GITHUB_TOKEN env var",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+
+    "postgres": {
+      "_comment": "PostgreSQL database access",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://user:password@localhost:5432/mydb"]
+    },
+
+    "brave-search": {
+      "_comment": "Web search via Brave Search API",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    },
+
+    "puppeteer": {
+      "_comment": "Browser automation for web scraping and testing",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-puppeteer"]
+    },
+
+    "sqlite": {
+      "_comment": "SQLite database access",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-sqlite", "/path/to/database.db"]
+    },
+
+    "memory": {
+      "_comment": "Persistent key-value memory store",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-memory"]
+    },
+
+    "python-server": {
+      "_comment": "Example: Python-based MCP server via uvx",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+
+    "docker-server": {
+      "_comment": "Example: Running MCP server in Docker container",
+      "transport": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp/server-example"]
+    },
+
+    "remote-api": {
+      "_comment": "Remote MCP server via SSE (Server-Sent Events)",
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${MCP_API_TOKEN}"
+      }
+    },
+
+    "local-sse-server": {
+      "_comment": "Local SSE server for development/testing",
+      "transport": "sse",
+      "url": "http://localhost:8080/sse"
+    }
+  }
+}

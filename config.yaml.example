@@ -1,5 +1,50 @@
-
 # Configuration for the aish agent.
+
+# LLM Settings
 model: ministral-3:14b
 endpoint_url: http://localhost:11434/v1
 # api_key: not-needed # Uncomment if you use a provider that requires an api key
+
+# Context Management
+# Maximum context length in tokens before automatic condensation kicks in
+# When reached, the oldest half of the conversation is summarized to save space
+# Common values: 4096, 8192, 16384, 32768, 65536, 131072
+# Set based on your model's context window (leave some room for responses)
+max_context_length: 8192
+
+# Web Search Settings
+# Web search is enabled by default using DuckDuckGo (no API key required)
+# Set to false to disable web search capabilities
+web_search_enabled: true
+
+# Auto-accept web search requests without prompting
+# If false, agent will ask for permission before each web search
+web_search_auto_accept: false
+
+# Search backend: "duckduckgo" (default), "searxng", or "perplexica"
+# DuckDuckGo requires no setup and works out of the box
+search_backend: "duckduckgo"
+
+# SearxNG Configuration (only used if search_backend is "searxng")
+# SearxNG is a privacy-respecting metasearch engine you can self-host
+# Your SearxNG instance must have JSON format enabled in settings.yml:
+#   search:
+#     formats:
+#       - html
+#       - json
+# searxng_url: "http://localhost:8888"
+
+# Perplexica Configuration (only used if search_backend is "perplexica")
+# Perplexica is an AI-powered search engine you can self-host
+# See: https://github.com/ItzCrazyKns/Perplexica
+# perplexica_url: "http://localhost:3000"
+# perplexica_chat_provider: ""        # Provider ID from /api/providers (leave empty for default)
+# perplexica_chat_model: ""           # Model key (leave empty for default)
+# perplexica_embedding_provider: ""   # Provider ID (leave empty for default)
+# perplexica_embedding_model: ""      # Embedding model key (leave empty for default)
+# perplexica_mode: "balanced"         # speed, balanced, or quality
+
+# SOCKS5 proxy for web requests (web_search and web_fetch)
+# Leave empty or remove for direct connection
+# Example: socks5://localhost:1080 or socks5://user:pass@proxy.example.com:1080
+web_proxy: ""

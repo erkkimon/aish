@@ -3,3 +3,6 @@ PyYAML
 rich
 openai
 instructor
+mcp
+duckduckgo-search
+html2text

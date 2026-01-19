@@ -251,15 +251,111 @@ EOF
         else
             echo "# api_key: not-needed # Uncomment if you use a provider that requires an api key" >> "$USER_CONFIG_PATH.tmp"
         fi
-        
+
+        # Context management configuration
+        echo "" >> "$USER_CONFIG_PATH.tmp"
+        echo "# Context Management" >> "$USER_CONFIG_PATH.tmp"
+        echo ""
+        print_info "Configure maximum context length for conversation history."
+        print_info "When reached, older messages are automatically summarized."
+        echo "  Common values based on model context windows:"
+        echo "    1) 4096   (small models)"
+        echo "    2) 8192   (default, most 7B-14B models)"
+        echo "    3) 16384  (larger models)"
+        echo "    4) 32768  (32K context models)"
+        echo "    5) 65536  (64K context models)"
+        echo "    6) 131072 (128K context models)"
+        read -p "Select context length [2]: " CONTEXT_CHOICE
+
+        case "$CONTEXT_CHOICE" in
+            1) MAX_CONTEXT=4096 ;;
+            3) MAX_CONTEXT=16384 ;;
+            4) MAX_CONTEXT=32768 ;;
+            5) MAX_CONTEXT=65536 ;;
+            6) MAX_CONTEXT=131072 ;;
+            *) MAX_CONTEXT=8192 ;;
+        esac
+
+        echo "max_context_length: $MAX_CONTEXT" >> "$USER_CONFIG_PATH.tmp"
+        print_success "Context length set to $MAX_CONTEXT tokens"
+
+        # Web search configuration
+        echo "" >> "$USER_CONFIG_PATH.tmp"
+        echo "# Web Search Settings" >> "$USER_CONFIG_PATH.tmp"
+        echo "web_search_enabled: true" >> "$USER_CONFIG_PATH.tmp"
+
+        # Ask about auto-accepting web search requests
+        echo ""
+        print_info "Web search is enabled by default using DuckDuckGo (no API key required)."
+        read -p "Auto-accept web search requests without prompting? (y/N): " AUTO_ACCEPT
+        if [[ "$AUTO_ACCEPT" =~ ^[Yy]$ ]]; then
+            echo "web_search_auto_accept: true" >> "$USER_CONFIG_PATH.tmp"
+            print_success "Web search requests will be auto-accepted"
+        else
+            echo "web_search_auto_accept: false" >> "$USER_CONFIG_PATH.tmp"
+            print_info "Agent will ask permission before each web search"
+        fi
+
+        # Ask about search backend
+        echo ""
+        print_info "Choose a search backend:"
+        echo "  1) DuckDuckGo (default, no setup required)"
+        echo "  2) SearxNG (privacy-respecting, self-hosted)"
+        echo "  3) Perplexica (AI-powered, self-hosted)"
+        read -p "Select search backend [1]: " SEARCH_BACKEND_CHOICE
+
+        case "$SEARCH_BACKEND_CHOICE" in
+            2)
+                echo "search_backend: \"searxng\"" >> "$USER_CONFIG_PATH.tmp"
+                read -p "SearxNG URL (e.g., http://localhost:8888): " SEARXNG_URL
+                if [ -n "$SEARXNG_URL" ]; then
+                    echo "searxng_url: \"$SEARXNG_URL\"" >> "$USER_CONFIG_PATH.tmp"
+                    print_success "SearxNG configured: $SEARXNG_URL"
+                else
+                    echo "# searxng_url: \"http://localhost:8888\"" >> "$USER_CONFIG_PATH.tmp"
+                    print_info "SearxNG URL not set - configure it in ~/.aish/config.yaml"
+                fi
+                ;;
+            3)
+                echo "search_backend: \"perplexica\"" >> "$USER_CONFIG_PATH.tmp"
+                read -p "Perplexica URL (e.g., http://localhost:3000): " PERPLEXICA_URL
+                if [ -n "$PERPLEXICA_URL" ]; then
+                    echo "perplexica_url: \"$PERPLEXICA_URL\"" >> "$USER_CONFIG_PATH.tmp"
+                    print_success "Perplexica configured: $PERPLEXICA_URL"
+                    print_info "Note: Perplexica will auto-detect available models."
+                    print_info "You can manually configure models in ~/.aish/config.yaml if needed."
+                    echo "perplexica_mode: \"balanced\"" >> "$USER_CONFIG_PATH.tmp"
+                else
+                    echo "# perplexica_url: \"http://localhost:3000\"" >> "$USER_CONFIG_PATH.tmp"
+                    print_info "Perplexica URL not set - configure it in ~/.aish/config.yaml"
+                fi
+                ;;
+            *)
+                echo "search_backend: \"duckduckgo\"" >> "$USER_CONFIG_PATH.tmp"
+                print_success "Using DuckDuckGo (no setup required)"
+                ;;
+        esac
+
+        # Ask about SOCKS5 proxy
+        echo ""
+        print_info "If you need a SOCKS5 proxy for web access, enter it below."
+        print_info "Format: socks5://host:port or socks5://user:pass@host:port"
+        read -p "SOCKS5 proxy (leave empty for direct connection): " USER_PROXY
+        if [ -n "$USER_PROXY" ]; then
+            echo "web_proxy: \"$USER_PROXY\"" >> "$USER_CONFIG_PATH.tmp"
+            print_success "Proxy configured: $USER_PROXY"
+        else
+            echo "web_proxy: \"\"" >> "$USER_CONFIG_PATH.tmp"
+        fi
+
         # Replace the original config with the updated one
         mv "$USER_CONFIG_PATH.tmp" "$USER_CONFIG_PATH"
-        
+
         # Verify the config was updated correctly
         print_success "Configuration file created at $USER_CONFIG_PATH"
         print_info "Model configured: $USER_MODEL"
         print_info "Endpoint configured: $USER_ENDPOINT"
-        
+
         print_success "Configuration file created at $USER_CONFIG_PATH"
     else
         print_error "config.yaml.example not found in $AISH_PROJECT_DIR"

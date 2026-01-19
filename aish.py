@@ -3,8 +3,7 @@ import sys
 import os
 import json
 import re
-import requests
-import subprocess
+import asyncio
 from datetime import datetime
 import yaml
 from rich.console import Console
@@ -15,6 +14,12 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import instructor
 from openai import OpenAI
+
+# Built-in tools
+from tools import ToolCall, ToolResult, execute_tool, get_tools_description, TOOLS, apply_file_edit
+
+# MCP support (optional module)
+from mcp_manager import mcp_manager, MCPToolCall
 
 # --- Configuration Loader ---
 # Look for config.yaml in user's config directory or script directory
@@ -56,6 +61,7 @@ def load_config():
 
 CONFIG = load_config()
 
+
 # --- Colors and Emojis ---
 C_BLUE = "\033[94m"
 C_GREEN = "\033[92m"
@@ -85,9 +91,14 @@ class AgentResponse(BaseModel):
         description="Clear explanation of what you're doing or your response to the user"
     )
 
-    command: Optional[str] = Field(
+    tool_call: Optional[ToolCall] = Field(
         default=None,
-        description="The bash command to execute. MUST be set for any actionable request (open, run, create, edit, etc.). Only null when task is truly complete or asking a question."
+        description="Call a tool to perform an action. Set tool_name ('bash_exec', 'web_search', 'web_fetch') and arguments dict. Must be set for any actionable request."
+    )
+
+    mcp_tool_call: Optional[MCPToolCall] = Field(
+        default=None,
+        description="Call an MCP tool (if available). Set tool_name and arguments. Cannot be used together with 'tool_call'."
     )
 
     is_question: bool = Field(
@@ -102,7 +113,7 @@ class AgentResponse(BaseModel):
 
     is_complete: bool = Field(
         default=False,
-        description="True ONLY after actionable requests have been executed. If user asks to 'open/run/create/edit' something, this must be false until command is provided and run. Never true for unexecuted action requests."
+        description="True ONLY after actionable requests have been executed. If user asks to 'open/run/create/edit' something, this must be false until tool is called. Never true for unexecuted action requests."
     )
 
     memory_update: Optional[str] = Field(
@@ -401,12 +412,165 @@ def call_llm(messages, response_model=AgentResponse, max_retries=2):
             print(f"{C_RED}{EMOJI_ERROR} Error calling LLM: {e}{C_END}", file=sys.stderr)
         return None
 
+
+# --- Context Management ---
+
+def estimate_tokens(text: str) -> int:
+    """
+    Estimate the number of tokens in a text string.
+    Uses a simple heuristic: ~4 characters per token on average.
+    This is a rough approximation that works reasonably well for most text.
+    """
+    return len(text) // 4
+
+
+def count_messages_tokens(messages: list) -> int:
+    """
+    Count the total estimated tokens in a list of messages.
+    Includes role overhead (~4 tokens per message for role/formatting).
+    """
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        # Add content tokens + overhead for role and formatting
+        total += estimate_tokens(content) + 4
+    return total
+
+
+class CondensationSummary(BaseModel):
+    """Model for context condensation summary."""
+    summary: str = Field(
+        description="A comprehensive summary of the conversation so far, including: what the user requested, what actions were taken, what tools were used and their results, any important decisions or outcomes. Be thorough but concise."
+    )
+
+
+def call_llm_for_condensation(messages: list) -> Optional[str]:
+    """
+    Call LLM to create a condensed summary of messages.
+    Uses a simpler prompt without the full agent context.
+    """
+    try:
+        client = get_instructor_client()
+
+        condensation_prompt = """You are a context summarizer. Your task is to create a comprehensive summary of the conversation history provided.
+
+Include in your summary:
+1. What the user originally requested
+2. What actions/tools were executed and their results
+3. Any important decisions, errors, or outcomes
+4. The current state of the task (completed, in progress, etc.)
+5. Any relevant context needed to continue the conversation
+
+Be thorough but concise. The summary will be used to continue the conversation with limited context."""
+
+        # Build the messages to summarize
+        summary_messages = [
+            {"role": "system", "content": condensation_prompt},
+            {"role": "user", "content": f"Please summarize this conversation history:\n\n{json.dumps(messages, indent=2)}"}
+        ]
+
+        response = client.chat.completions.create(
+            model=CONFIG.get("model"),
+            response_model=CondensationSummary,
+            messages=summary_messages,
+            temperature=0.3,  # Lower temperature for more consistent summaries
+            max_retries=2,
+        )
+        return response.summary
+    except Exception as e:
+        print(f"{C_YELLOW}Warning: Context condensation failed: {e}{C_END}", file=sys.stderr)
+        return None
+
+
+def condense_context(messages: list, console) -> list:
+    """
+    Condense the context when it exceeds the maximum length.
+
+    Strategy:
+    1. Keep the system prompt (first message) intact
+    2. Split remaining messages into older half and newer half
+    3. Summarize the older half
+    4. Return: [system_prompt, condensation_summary, newer_half_messages]
+
+    Args:
+        messages: The full message list
+        console: Rich console for status output
+
+    Returns:
+        Condensed message list
+    """
+    if len(messages) <= 3:
+        # Not enough messages to condense
+        return messages
+
+    # Keep system prompt separate
+    system_prompt = messages[0]
+    conversation_messages = messages[1:]
+
+    # Find the midpoint
+    midpoint = len(conversation_messages) // 2
+
+    # Ensure we have at least some messages in each half
+    if midpoint < 1:
+        midpoint = 1
+
+    older_half = conversation_messages[:midpoint]
+    newer_half = conversation_messages[midpoint:]
+
+    # Create summary of older half
+    with console.status("[bold cyan]Condensing context (summarizing older messages)..."):
+        summary = call_llm_for_condensation(older_half)
+
+    if not summary:
+        # If condensation failed, try a simpler approach: just keep recent messages
+        console.print("[yellow]⚠ Context condensation failed, keeping recent messages only[/yellow]")
+        # Keep system prompt + last half of messages
+        return [system_prompt] + newer_half
+
+    # Build condensed message list
+    condensation_message = {
+        "role": "user",
+        "content": f"[CONTEXT SUMMARY - Earlier conversation was condensed to save space]\n\n{summary}\n\n[END OF CONTEXT SUMMARY - Continuing conversation below]"
+    }
+
+    condensed_messages = [system_prompt, condensation_message] + newer_half
+
+    # Log the condensation
+    old_tokens = count_messages_tokens(messages)
+    new_tokens = count_messages_tokens(condensed_messages)
+    console.print(f"[dim]📦 Context condensed: {old_tokens} → {new_tokens} tokens ({len(messages)} → {len(condensed_messages)} messages)[/dim]")
+
+    return condensed_messages
+
+
+def check_and_condense_context(messages: list, max_tokens: int, console) -> list:
+    """
+    Check if context exceeds max tokens and condense if needed.
+
+    Args:
+        messages: Current message list
+        max_tokens: Maximum allowed tokens
+        console: Rich console for output
+
+    Returns:
+        Original or condensed message list
+    """
+    current_tokens = count_messages_tokens(messages)
+
+    if current_tokens >= max_tokens:
+        console.print(f"[yellow]⚠ Context limit reached ({current_tokens}/{max_tokens} tokens), condensing...[/yellow]")
+        return condense_context(messages, console)
+
+    return messages
+
+
 def get_system_prompt():
     """Defines the agent's instructions and persona."""
+    memory_path = get_memory_path()
     memory_info = f"""
 
     ## Memory Management:
-    You have a persistent memory file at {get_memory_path()}. This memory stores **SYSTEM STATE** - durable facts about the current environment.
+    You have a persistent memory file at {memory_path}. This memory stores **SYSTEM STATE** - durable facts about the current environment.
 
     ### What memory IS for (STATE):
     - System configuration: "nginx installed, serves /var/www/html on port 80"
@@ -426,130 +590,114 @@ def get_system_prompt():
 
     ### How to Update Memory:
 
-    **IMPORTANT:** Memory updates are done through the `memory_update` response field, NOT shell commands.
-    NEVER use echo/cat/vim to edit the memory file. Just set the `memory_update` field in your response.
+    **Use file_edit** to update memory. This shows a diff for user approval before changes are applied.
 
-    When user says "remember that..." or "add to memory...", set `memory_update` field with:
-
-    **Add new state:**
-    ```
-    Add to memory:
-    ## Section Name
-    - Fact about current state
-    ```
-
-    **Update existing state:**
-    ```
-    Update memory:
-    ## Section Name
-    - Updated fact (replaces entire section)
+    Example - Add new preference:
+    ```json
+    {{"tool_call": {{"tool_name": "file_edit", "arguments": {{
+        "file_path": "{memory_path}",
+        "old_text": "## User Preferences\\n",
+        "new_text": "## User Preferences\\n- prefers vim over nano\\n"
+    }}}}}}
     ```
 
-    **Remove outdated state:**
-    ```
-    Delete from memory:
-    ## Section Name
+    Example - Update existing entry:
+    ```json
+    {{"tool_call": {{"tool_name": "file_edit", "arguments": {{
+        "file_path": "{memory_path}",
+        "old_text": "- uses Python 3.10",
+        "new_text": "- uses Python 3.12"
+    }}}}}}
     ```
 
-    For memory-only requests, set `is_complete=true`, `command=null`, and provide `memory_update`.
+    First use `file_read` to see current memory content, then use `file_edit` to make changes.
     Keep memory compact. Delete outdated information when state changes.
-    """ if load_memory() is not None else """
+    """ if load_memory() is not None else f"""
 
     ## Memory Management:
-    A memory file at {get_memory_path()} stores **SYSTEM STATE** - durable facts about the environment.
+    A memory file at {memory_path} stores **SYSTEM STATE** - durable facts about the environment.
 
-    **IMPORTANT:** Update memory through the `memory_update` response field, NOT shell commands.
-    When user says "remember..." or "add to memory...", set `memory_update` field, `is_complete=true`, `command=null`.
+    **Use file_edit** to update memory - this shows a diff for user approval before changes are applied.
+    First use `file_read` to check current content, then use `file_edit` to add/update facts.
 
-    Format: `Add to memory:\\n## Section\\n- fact`
+    Example:
+    ```json
+    {{"tool_call": {{"tool_name": "file_edit", "arguments": {{
+        "file_path": "{memory_path}",
+        "old_text": "",
+        "new_text": "## User Preferences\\n- prefers vim\\n"
+    }}}}}}
+    ```
 
     Store: configurations, preferences, installed tools, project conventions.
     Never store: action logs, timestamps, "what I did" entries.
     """
     
+    # Get tools description based on config
+    web_search_enabled = CONFIG.get('web_search_enabled', True)
+    tools_section = get_tools_description(web_search_enabled=web_search_enabled)
+
+    # Get MCP section only if tools are available
+    mcp_section = mcp_manager.get_system_prompt_section()
+    has_mcp = mcp_manager.has_tools()
+
+    # MCP field description if available
+    mcp_field_desc = ""
+    if has_mcp:
+        mcp_field_desc = "\n    - **mcp_tool_call**: Call an MCP tool (if available). Set tool_name and arguments dict."
+
+    # Web search note if disabled
+    web_search_note = ""
+    if not web_search_enabled:
+        web_search_note = """
+    **Note:** Web search is currently disabled. If you encounter a problem that seems to require
+    internet access (e.g., looking up documentation, finding current information), suggest to the
+    user that enabling web search might help. They can enable it in ~/.aish/config.yaml by setting
+    web_search_enabled: true
+    """
+
     return f"""
-    You are a helpful AI assistant running in a shell environment. Your goal is to assist the boss by executing shell commands to accomplish their tasks.
+    You are a helpful AI assistant running in a shell environment. Your goal is to assist the boss by using tools to accomplish their tasks.
 
     You must respond using structured output with these fields:
     - **explanation**: Your clear explanation of what you're doing or thinking
-    - **command**: The next bash command to execute (set to null when done or asking a question)
+    - **tool_call**: Call a tool (bash_exec, web_search, web_fetch). Set tool_name and arguments dict.{mcp_field_desc}
     - **is_question**: Set to true if you're asking the user a question
     - **question_options**: List of options if providing choices (can be null)
     - **is_complete**: Set to true when the original request is fully resolved
     - **memory_update**: Memory update in markdown format when task is complete (can be null)
 
+    {tools_section}
+
     ## Your Workflow:
     1.  **Analyze:** Understand the boss's request and the context provided.
-    2.  **Plan & Execute:** Formulate a plan and propose the next single shell command.
+    2.  **Plan & Execute:** Formulate a plan and use the appropriate tool.
         - Set `explanation` to describe what you're doing and why
-        - Set `command` to the bash command to execute
+        - Set `tool_call` with the tool name and arguments
         - Keep `is_complete` as false while work remains
     3.  **Ask Questions:** If you need clarification:
         - Set `is_question` to true
-        - Set `command` to null
+        - Set `tool_call` to null
         - Optionally provide `question_options` as a list of choices
     4.  **Complete:** When the boss's request is fully resolved:
         - Set `is_complete` to true
-        - Set `command` to null
+        - Set `tool_call` to null
         - Provide a final summary in `explanation`
         - Optionally set `memory_update` with relevant information to preserve
 
     ## Important Rules:
-    -   **ACTION BIAS:** If the user requests an action (open, run, create, delete, edit, etc.), you MUST provide a `command`. NEVER just describe what you "would do" or "will do" - actually provide the command to do it.
-    -   **NEVER set is_complete=true for actionable requests** until the command has been executed. If user says "open X with vim", provide `command: "vim X"`, don't just summarize.
+    -   **ACTION BIAS:** If the user requests an action (open, run, create, delete, edit, search, etc.), you MUST provide a `tool_call`. NEVER just describe what you "would do" - actually call the tool.
+    -   **NEVER set is_complete=true for actionable requests** until the tool has been executed. If user says "open X with vim", call bash_exec with "vim X", don't just summarize.
     -   **Direct Language:** Address the boss directly using "you" and "your" instead of "the user" or "the boss's".
-    -   **Efficiency:** Use shell script constructs like `for` loops, pipes, and command chains (`&&`) to perform multiple steps in a single command when safe.
-    -   **Clarity:** Propose only one command at a time. Explain your reasoning clearly.
-    -   **Safety:** If a command is complex or potentially destructive, break it down into smaller, safer steps.
-    -   If a command fails, analyze the error and try to correct it.
-    -   When listing steps in your explanation, you're describing what YOU will do, not asking the user to choose. The steps are sequential actions you'll take.
-    -   When suggesting commands that are interactive by default, prefer adding non-interactive flags such as --noconfirm, --yes, or --accept.
+    -   **Efficiency:** For bash_exec, use shell constructs like `for` loops, pipes, and command chains (`&&`) when safe.
+    -   **Clarity:** Propose only one tool call at a time. Explain your reasoning clearly.
+    -   **Safety:** If an operation is complex or potentially destructive, break it down into smaller, safer steps.
+    -   If a tool call fails, analyze the error and try to correct it.
+    -   When using bash_exec with interactive commands, prefer adding non-interactive flags such as --noconfirm, --yes, or --accept.
+    {web_search_note}
+    {mcp_section}
     {memory_info}
     """
-
-def is_interactive_command(command):
-    """Check if command starts with an interactive program that needs direct terminal access."""
-    interactive_programs = [
-        'vim', 'vi', 'nvim', 'nano', 'pico', 'emacs', 'micro',  # editors
-        'less', 'more', 'most',  # pagers
-        'htop', 'top', 'btop', 'atop', 'glances',  # monitors
-        'mc', 'ranger', 'nnn', 'lf',  # file managers
-        'tmux', 'screen',  # terminal multiplexers
-        'ssh', 'telnet',  # remote access
-        'man', 'info',  # documentation
-        'python', 'python3', 'ipython', 'node', 'irb', 'ghci',  # REPLs (without args)
-    ]
-    # Get the first word of the command (the program name)
-    cmd_parts = command.strip().split()
-    if not cmd_parts:
-        return False
-
-    # Handle command chains - check first command
-    first_cmd = cmd_parts[0]
-
-    # Also check after && for chained commands
-    for part in command.split('&&'):
-        part = part.strip().split()[0] if part.strip().split() else ''
-        if part in interactive_programs:
-            return True
-
-    return first_cmd in interactive_programs
-
-def execute_command(command):
-    """Executes a shell command and returns its raw output."""
-    try:
-        shell = os.environ.get("SHELL", "/bin/bash")
-
-        # Interactive commands need direct terminal access
-        if is_interactive_command(command):
-            # Use os.system for direct terminal access
-            returncode = os.system(command)
-            return "(interactive program completed)", "", returncode >> 8  # os.system returns shifted exit code
-
-        result = subprocess.run(command, shell=True, check=False, capture_output=True, text=True, executable=shell)
-        return result.stdout, result.stderr, result.returncode
-    except Exception as e:
-        return None, f"Execution error: {e}", 1
 
 def ask_question_with_options(console, question_text, options):
     """
@@ -601,149 +749,330 @@ def ask_question_with_options(console, question_text, options):
         except (EOFError, KeyboardInterrupt):
             return None
 
+# --- Tool Emojis ---
+EMOJI_MCP = "🔌"
+EMOJI_SEARCH = "🔍"
+EMOJI_WEB = "🌐"
+EMOJI_FILE = "📁"
+EMOJI_EDIT = "✏️"
+EMOJI_DIFF = "📝"
+
+
+def get_tool_emoji(tool_name: str) -> str:
+    """Get the appropriate emoji for a tool."""
+    if tool_name == 'bash_exec':
+        return EMOJI_COMMAND
+    elif tool_name == 'web_search':
+        return EMOJI_SEARCH
+    elif tool_name == 'web_fetch':
+        return EMOJI_WEB
+    elif tool_name == 'file_read':
+        return EMOJI_FILE
+    elif tool_name == 'file_edit':
+        return EMOJI_EDIT
+    return EMOJI_COMMAND
+
+
+def get_tool_display_name(tool_name: str) -> str:
+    """Get a display-friendly name for a tool."""
+    names = {
+        'bash_exec': 'Bash Command',
+        'web_search': 'Web Search',
+        'web_fetch': 'Fetch Web Page',
+        'file_read': 'Read File',
+        'file_edit': 'Edit File'
+    }
+    return names.get(tool_name, tool_name)
+
+
 # --- Main Execution ---
 
-if __name__ == "__main__":
+async def main():
     console = Console()
 
     if len(sys.argv) < 2:
         console.print("Usage: [bold blue]./aish.py <your command>")
         sys.exit(1)
 
-    user_command = " ".join(sys.argv[1:])
-    initial_context = get_initial_context()
-    context_str = json.dumps(initial_context, indent=2)
+    # Initialize MCP servers if configured
+    if mcp_manager.is_available():
+        with console.status("[bold cyan]Connecting to MCP servers..."):
+            await mcp_manager.connect_all(console)
 
-    system_prompt = get_system_prompt()
-    user_initial_msg = f"""
-    Here is the initial context:\n{context_str}\n\nMy command is: "{user_command}"\nPlease create a plan and propose the first command.
-    """
+    # Get config settings
+    web_search_enabled = CONFIG.get('web_search_enabled', True)
+    web_search_auto_accept = CONFIG.get('web_search_auto_accept', False)
+    max_context_length = CONFIG.get('max_context_length', 8192)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_initial_msg},
-    ]
+    try:
+        user_command = " ".join(sys.argv[1:])
+        initial_context = get_initial_context()
 
-    while True:
-        with console.status("[bold green]Agent is thinking..."):
-            agent_response = call_llm(messages)
+        # Add available tools to context
+        available_tools = list(TOOLS.keys())
+        if not web_search_enabled:
+            available_tools = [t for t in available_tools if t not in ('web_search', 'web_fetch')]
+        initial_context["available_tools"] = available_tools
 
-        if not agent_response:
-            console.print(Panel("Agent did not return a response.", title="Error", border_style="red"))
-            break
+        # Add MCP tools info to context if available
+        if mcp_manager.has_tools():
+            initial_context["mcp_tools_available"] = list(mcp_manager.all_tools.keys())
 
-        # Add the structured response to messages as JSON for context
-        messages.append({"role": "assistant", "content": agent_response.model_dump_json()})
+        context_str = json.dumps(initial_context, indent=2)
 
-        # Extract fields from structured response
-        explanation = agent_response.explanation
-        command_to_run = agent_response.command
-        is_complete = agent_response.is_complete
-        is_question = agent_response.is_question
-        question_options = agent_response.question_options
-        memory_update = agent_response.memory_update
+        system_prompt = get_system_prompt()
+        user_initial_msg = f"""
+        Here is the initial context:\n{context_str}\n\nMy command is: "{user_command}"\nPlease analyze and use the appropriate tool.
+        """
 
-        # Handle task completion
-        if is_complete or not command_to_run:
-            # Task is complete
-            console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_initial_msg},
+        ]
 
-            # Handle memory update if provided
-            if memory_update:
-                action, section, content = parse_memory_diff(memory_update)
+        while True:
+            # Check context length and condense if needed
+            messages = check_and_condense_context(messages, max_context_length, console)
 
-                if action:
-                    console.print(Panel("Memory update suggested:", title="🧠 Memory Update", border_style="magenta"))
-                    console.print(Panel(Syntax(memory_update, "markdown", theme="monokai", line_numbers=False), border_style="magenta"))
+            with console.status("[bold green]Agent is thinking..."):
+                agent_response = call_llm(messages)
 
+            if not agent_response:
+                console.print(Panel("Agent did not return a response.", title="Error", border_style="red"))
+                break
+
+            # Add the structured response to messages as JSON for context
+            messages.append({"role": "assistant", "content": agent_response.model_dump_json()})
+
+            # Extract fields from structured response
+            explanation = agent_response.explanation
+            tool_call = agent_response.tool_call
+            mcp_tool_call = agent_response.mcp_tool_call
+            is_complete = agent_response.is_complete
+            is_question = agent_response.is_question
+            question_options = agent_response.question_options
+            memory_update = agent_response.memory_update
+
+            # Handle task completion (no tool call AND no MCP tool call)
+            if is_complete or (not tool_call and not mcp_tool_call):
+                # Task is complete
+                console.print(Panel(explanation, title=f"{EMOJI_SUMMARY} Summary", border_style="green"))
+
+                # Handle memory update if provided
+                if memory_update:
+                    action, section, content = parse_memory_diff(memory_update)
+
+                    if action:
+                        console.print(Panel("Memory update suggested:", title="🧠 Memory Update", border_style="magenta"))
+                        console.print(Panel(Syntax(memory_update, "markdown", theme="monokai", line_numbers=False), border_style="magenta"))
+
+                        try:
+                            choice = console.input("[bold magenta]Update memory? (Y/n):[/bold magenta] ").lower().strip()
+                        except (EOFError, KeyboardInterrupt):
+                            choice = 'n'
+
+                        if choice in ('y', 'yes', ''):
+                            success, message, new_content = apply_memory_diff_with_retry(action, section, content)
+                            if success:
+                                console.print(f"[green]✓ {message}[/green]")
+                            else:
+                                console.print(f"[red]✗ {message}[/red]")
+                        else:
+                            console.print("[yellow]Memory update cancelled.[/yellow]")
+
+                break
+
+            # Handle questions from the agent
+            if is_question:
+                if question_options:
+                    # Interactive option selection
+                    response = ask_question_with_options(console, explanation, question_options)
+                    if response is None:
+                        console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                        break
+                    messages.append({"role": "user", "content": f"Boss response: {response}"})
+                    continue
+                else:
+                    # Open-ended question - treat as comment mode
                     try:
-                        choice = console.input("[bold magenta]Update memory? (Y/n):[/bold magenta] ").lower().strip()
+                        console.print(Panel(explanation, title="❓ Question", border_style="yellow"))
+                        comment_prompt = f"[yellow]{EMOJI_COMMENT} Your response: [/yellow]"
+                        comment = console.input(comment_prompt)
+                        if not comment.strip():
+                            console.print("[red]Response cannot be empty.[/red]")
+                            continue
+                        messages.append({"role": "user", "content": f"Boss response: {comment}"})
+                        continue
+                    except (EOFError, KeyboardInterrupt):
+                        console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                        break
+
+            # Handle MCP tool calls
+            if mcp_tool_call:
+                tool_name = mcp_tool_call.tool_name
+                tool_args = mcp_tool_call.arguments
+
+                # Display MCP tool call
+                console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
+                tool_call_str = f"{tool_name}({json.dumps(tool_args, indent=2)})"
+                console.print(Panel(Syntax(tool_call_str, "json", theme="monokai", line_numbers=False), title=f"{EMOJI_MCP} MCP Tool Call", border_style="cyan"))
+
+                # --- User Prompt for MCP tool ---
+                try:
+                    choice_prompt = f"[bold yellow]Execute MCP tool? (Y/n/c):[/bold yellow] "
+                    choice = console.input(choice_prompt).lower().strip()
+                except (EOFError, KeyboardInterrupt):
+                    choice = 'n'
+
+                if choice in ('n', 'no'):
+                    console.print("[yellow]Execution stopped by boss.[/yellow]")
+                    break
+                elif choice in ('c', 'comment'):
+                    try:
+                        comment_prompt = f"[yellow]{EMOJI_COMMENT} Comment: [/yellow]"
+                        comment = console.input(comment_prompt)
+                        if not comment.strip():
+                            console.print("[red]Comment cannot be empty.[/red]")
+                            continue
+                        messages.append({"role": "user", "content": f"Boss comment: {comment}"})
+                        continue
+                    except (EOFError, KeyboardInterrupt):
+                        console.print("\n[yellow]Execution stopped by boss.[/yellow]")
+                        break
+                elif choice in ('y', 'yes', ''):
+                    # Execute MCP tool
+                    with console.status(f"[bold cyan]Calling MCP tool '{tool_name}'..."):
+                        result = await mcp_manager.call_tool(tool_name, tool_args)
+
+                    if "error" in result:
+                        console.print(Panel(Text(result["error"], justify="left"), title=f"{EMOJI_ERROR} MCP Tool Error", border_style="red"))
+                        messages.append({"role": "user", "content": f"MCP tool '{tool_name}' failed. Error: {result['error']}"})
+                    else:
+                        tool_result = result.get("result", "")
+                        # Truncate very long results for display
+                        display_result = tool_result[:2000] + "..." if len(tool_result) > 2000 else tool_result
+                        console.print(Panel(Text(display_result, justify="left"), title=f"{EMOJI_OUTPUT} MCP Tool Result", border_style="green"))
+                        messages.append({"role": "user", "content": f"MCP tool '{tool_name}' executed successfully. Result:\n{tool_result}"})
+                else:
+                    console.print("[red]Invalid choice. Exiting.[/red]")
+                    break
+
+                continue
+
+            # Handle built-in tool calls
+            if tool_call:
+                tool_name = tool_call.tool_name
+                tool_args = tool_call.arguments
+                tool_emoji = get_tool_emoji(tool_name)
+                tool_display = get_tool_display_name(tool_name)
+
+                # Check if web search/fetch is disabled
+                if tool_name in ('web_search', 'web_fetch') and not web_search_enabled:
+                    console.print(Panel(
+                        f"Web search is disabled. Enable it in ~/.aish/config.yaml by setting web_search_enabled: true",
+                        title="⚠️ Web Search Disabled",
+                        border_style="yellow"
+                    ))
+                    messages.append({"role": "user", "content": f"Tool '{tool_name}' is disabled. Web search is not enabled in configuration."})
+                    continue
+
+                # Display tool call
+                console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
+
+                # Format tool call for display
+                if tool_name == 'bash_exec':
+                    command = tool_args.get('command', '')
+                    console.print(Panel(Syntax(command, "bash", theme="monokai", line_numbers=False), title=f"{tool_emoji} {tool_display}", border_style="blue"))
+                else:
+                    tool_call_str = f"{tool_name}({json.dumps(tool_args, indent=2)})"
+                    console.print(Panel(Syntax(tool_call_str, "json", theme="monokai", line_numbers=False), title=f"{tool_emoji} {tool_display}", border_style="cyan"))
+
+                # Determine if we should auto-accept
+                auto_accept = False
+                if tool_name in ('web_search', 'web_fetch') and web_search_auto_accept:
+                    auto_accept = True
+
+                # --- User Prompt ---
+                if auto_accept:
+                    choice = 'y'
+                    console.print(f"[dim](auto-accepted)[/dim]")
+                else:
+                    try:
+                        choice_prompt = f"[bold yellow]Execute? (Y/n/c):[/bold yellow] "
+                        choice = console.input(choice_prompt).lower().strip()
                     except (EOFError, KeyboardInterrupt):
                         choice = 'n'
 
-                    if choice in ('y', 'yes', ''):
-                        success, message, new_content = apply_memory_diff_with_retry(action, section, content)
-                        if success:
-                            console.print(f"[green]✓ {message}[/green]")
-                        else:
-                            console.print(f"[red]✗ {message}[/red]")
-                    else:
-                        console.print("[yellow]Memory update cancelled.[/yellow]")
-
-            break
-
-        # Handle questions from the agent
-        if is_question:
-            if question_options:
-                # Interactive option selection
-                response = ask_question_with_options(console, explanation, question_options)
-                if response is None:
-                    console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                if choice in ('n', 'no'):
+                    console.print("[yellow]Execution stopped by boss.[/yellow]")
                     break
-                messages.append({"role": "user", "content": f"Boss response: {response}"})
-                continue
-            else:
-                # Open-ended question - treat as comment mode
-                try:
-                    console.print(Panel(explanation, title="❓ Question", border_style="yellow"))
-                    comment_prompt = f"[yellow]{EMOJI_COMMENT} Your response: [/yellow]"
-                    comment = console.input(comment_prompt)
-                    if not comment.strip():
-                        console.print("[red]Response cannot be empty.[/red]")
+                elif choice in ('c', 'comment'):
+                    try:
+                        comment_prompt = f"[yellow]{EMOJI_COMMENT} Comment: [/yellow]"
+                        comment = console.input(comment_prompt)
+                        if not comment.strip():
+                            console.print("[red]Comment cannot be empty.[/red]")
+                            continue
+                        messages.append({"role": "user", "content": f"Boss comment: {comment}"})
                         continue
-                    messages.append({"role": "user", "content": f"Boss response: {comment}"})
-                    continue
-                except (EOFError, KeyboardInterrupt):
-                    console.print("\n[yellow]Question cancelled by boss.[/yellow]")
+                    except (EOFError, KeyboardInterrupt):
+                        console.print("\n[yellow]Execution stopped by boss.[/yellow]")
+                        break
+                elif choice in ('y', 'yes', ''):
+                    # Execute tool
+                    with console.status(f"[bold cyan]Executing {tool_display}..."):
+                        result = execute_tool(tool_name, tool_args, CONFIG)
+
+                    if not result.success:
+                        error_msg = result.error or "Unknown error"
+                        console.print(Panel(Text(error_msg, justify="left"), title=f"{EMOJI_ERROR} Tool Error", border_style="red"))
+                        messages.append({"role": "user", "content": f"Tool '{tool_name}' failed. Error: {error_msg}"})
+                    elif tool_name == 'file_edit' and result.pending_edit:
+                        # Special handling for file_edit: show diff and ask for approval
+                        file_path = result.pending_edit.get('file_path', 'unknown')
+                        console.print(Panel(
+                            Syntax(result.diff, "diff", theme="monokai", line_numbers=False),
+                            title=f"{EMOJI_DIFF} Diff: {file_path}",
+                            border_style="yellow"
+                        ))
+
+                        # Ask for approval to apply changes
+                        try:
+                            apply_prompt = f"[bold yellow]Apply these changes? (Y/n):[/bold yellow] "
+                            apply_choice = console.input(apply_prompt).lower().strip()
+                        except (EOFError, KeyboardInterrupt):
+                            apply_choice = 'n'
+
+                        if apply_choice in ('y', 'yes', ''):
+                            # Apply the edit
+                            apply_result = apply_file_edit(result.pending_edit)
+                            if apply_result.success:
+                                console.print(f"[green]✓ {apply_result.output}[/green]")
+                                messages.append({"role": "user", "content": f"File edit applied successfully to {file_path}."})
+                            else:
+                                console.print(Panel(Text(apply_result.error or "Unknown error", justify="left"), title=f"{EMOJI_ERROR} Apply Error", border_style="red"))
+                                messages.append({"role": "user", "content": f"Failed to apply file edit: {apply_result.error}"})
+                        else:
+                            console.print("[yellow]File edit cancelled.[/yellow]")
+                            messages.append({"role": "user", "content": f"User cancelled the file edit to {file_path}."})
+                    else:
+                        output = result.output
+                        # Truncate very long results for display
+                        display_output = output[:2000] + "..." if len(output) > 2000 else output
+                        console.print(Panel(Text(display_output, justify="left"), title=f"{EMOJI_OUTPUT} Result", border_style="green"))
+                        messages.append({"role": "user", "content": f"Tool '{tool_name}' executed successfully. Result:\n{output}"})
+                else:
+                    console.print("[red]Invalid choice. Exiting.[/red]")
                     break
 
-        # --- Plan and Command Panels ---
-        console.print(Panel(Text(explanation, justify="left"), title=f"{EMOJI_AGENT} Plan", border_style="blue"))
-        console.print(Panel(Syntax(command_to_run, "bash", theme="monokai", line_numbers=False), title=f"{EMOJI_COMMAND} Command", border_style="blue"))
-
-        # --- User Prompt ---
-        try:
-            choice_prompt = f"[bold yellow]Execute? (Y/n/c):[/bold yellow] "
-            choice = console.input(choice_prompt).lower().strip()
-        except (EOFError, KeyboardInterrupt):
-            choice = 'n'
-
-        if choice in ('n', 'no'):
-            console.print("[yellow]Execution stopped by boss.[/yellow]")
-            break
-        elif choice in ('c', 'comment'):
-            try:
-                comment_prompt = f"[yellow]{EMOJI_COMMENT} Comment: [/yellow]"
-                comment = console.input(comment_prompt)
-                if not comment.strip():
-                    console.print("[red]Comment cannot be empty.[/red]")
-                    continue
-                messages.append({"role": "user", "content": f"Boss comment: {comment}"})
                 continue
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Execution stopped by boss.[/yellow]")
-                break
-        elif choice in ('y', 'yes', ''):
-            stdout, stderr, return_code = execute_command(command_to_run)
-            
-            output_for_llm = []
-            output_panels = []
 
-            if stdout:
-                output_for_llm.append(f"STDOUT:\n{stdout.strip()}")
-                output_panels.append(Panel(Syntax(stdout, "bash", theme="monokai"), title=f"{EMOJI_OUTPUT} STDOUT", border_style="green"))
-            if stderr:
-                output_for_llm.append(f"STDERR:\n{stderr.strip()}")
-                output_panels.append(Panel(Text(stderr, justify="left"), title=f"{EMOJI_ERROR} STDERR", border_style="red"))
+    finally:
+        # Clean up MCP servers
+        if mcp_manager.servers:
+            with console.status("[bold cyan]Disconnecting MCP servers..."):
+                await mcp_manager.cleanup()
 
-            if return_code != 0:
-                output_for_llm.insert(0, f"Command failed with exit code {return_code}")
 
-            for panel in output_panels:
-                console.print(panel)
-
-            full_output_for_llm = "\n".join(output_for_llm)
-            messages.append({"role": "user", "content": f"Command '{command_to_run}' executed (exit code: {return_code}). Output:\n{full_output_for_llm}"})
-        else:
-            console.print("[red]Invalid choice. Exiting.[/red]")
-            break
+if __name__ == "__main__":
+    asyncio.run(main())
